@@ -398,7 +398,7 @@ class ToolLoopTest(unittest.TestCase):
 
     def test_tools_behave(self):
         r = self.runner("read", ["echo"])
-        self.assertEqual(r.run("read_file", {"path": "notes.txt"}), "line1\nline2")
+        self.assertEqual(r.run("read_file", {"path": "notes.txt"}), "    1\tline1\n    2\tline2")
         self.assertIn("off limits", r.run("read_file", {"path": "../data/secrets.json"}))
         self.assertIn("not allow", r.run("write_file", {"path": "x", "content": "y"}))
         self.assertIn("only these programs", r.run("run_command", {"command": "ls"}))
@@ -416,9 +416,10 @@ class ToolLoopTest(unittest.TestCase):
         first = r.run("read_file", {"path": str(f)})
         self.assertLessEqual(len(first), self.at.MAX_OUT)
         nxt = int(first.rsplit("offset=", 1)[1].split()[0].rstrip("."))
-        self.assertTrue(first.split("\n")[-2].startswith(f"line {nxt - 1} "))  # whole lines, no cut
+        self.assertEqual(first.split("\n")[-2], f"{nxt:>5}\tline {nxt - 1} " + "x" * 200)  # whole, numbered
         rest = r.run("read_file", {"path": str(f), "offset": nxt})
-        self.assertTrue(rest.startswith(f"line {nxt} "))
+        self.assertEqual(rest.split("\n")[0], f"{nxt + 1:>5}\tline {nxt} " + "x" * 200)
+        self.assertTrue(r.run("read_file", {"path": str(f), "offset": 0, "limit": 1}).startswith("    1\tline 0 "))
 
     def test_loop_runs_tool_then_answers(self):
         tmp = tempfile.TemporaryDirectory()

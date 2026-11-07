@@ -110,14 +110,16 @@ class ToolRunner:
         lines = self._path(path).read_text("utf-8", errors="replace").splitlines()
         offset, end, size = max(0, int(offset)), min(len(lines), max(0, int(offset)) + int(limit)), 0
         stop = offset
-        while stop < end and size + len(lines[stop]) + 1 <= MAX_OUT - 300:  # whole lines only
-            size += len(lines[stop]) + 1
+        # numbered like cat -n (L1 = first line), so agents cite real line numbers
+        numbered = [f"{i + 1:>5}\t{lines[i]}" for i in range(offset, end)]
+        while stop < end and size + len(numbered[stop - offset]) + 1 <= MAX_OUT - 300:  # whole lines only
+            size += len(numbered[stop - offset]) + 1
             stop += 1
         stop = max(stop, min(offset + 1, end))  # always return at least one line
-        out = "\n".join(lines[offset:stop])
+        out = "\n".join(numbered[:stop - offset])
         if stop < len(lines):  # say exactly where to continue, so nobody guesses the rest
-            out += (f"\n…[shown lines {offset}-{stop - 1} of {len(lines)}; the file continues. "
-                    f"Call read_file with offset={stop} to read the rest.]")
+            out += (f"\n…[shown L{offset + 1}-L{stop} of {len(lines)}; the file continues. "
+                    f"Call read_file with offset={stop} to read from L{stop + 1}.]")
         return out
 
     def t_list_dir(self, path: str = ".") -> str:
