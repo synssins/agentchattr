@@ -73,7 +73,7 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
         return json.loads(resp.read())
 
 
-MAX_TOOL_STEPS = 12        # tool calls per turn for API agents
+MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -444,7 +444,11 @@ class Runner:
         env.update(admin_api.secrets_for(self.name))
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
                                         protect=str(Path(self.m.data_dir).resolve()))
-        for _ in range(MAX_TOOL_STEPS):
+        try:
+            steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
+        except (TypeError, ValueError):
+            steps = MAX_TOOL_STEPS
+        for _ in range(steps):
             try:
                 reply = call_api_message(spec, system, msgs, tools)
             except urllib.error.HTTPError as exc:
@@ -477,7 +481,13 @@ class Runner:
                 else:
                     out = runner.run(fn.get("name", ""), args)
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": out})
-        return "(stopped after too many tool steps)"
+        # Out of steps: one last call without tools so the agent reports where it got to
+        log.info("%s used all %d tool steps; asking for a summary", self.name, steps)
+        msgs.append({"role": "user", "content": (
+            f"(You have used all {steps} tool steps for this turn. Don't call tools. Post what you did, "
+            "what you found, and exactly what is left, so the work can continue next turn.)")})
+        return call_api_message(spec, system, msgs, None).get("content") or \
+            f"(stopped after {steps} tool steps without a summary)"
 
     def _cli_turn(self, channel: str) -> str:
         spec = self.spec

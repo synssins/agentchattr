@@ -205,6 +205,7 @@
         const allowedCmds = el('input', { value: (a.allowed_commands || []).join(', '),
             placeholder: 'e.g. slop-chop, git (blank: none)' });
         const timeout = el('input', { type: 'number', min: '10', max: '7200', value: a.timeout || '', placeholder: '600' });
+        const steps = el('input', { type: 'number', min: '1', max: '200', value: a.max_tool_steps || '', placeholder: '40' });
         const permWarn = el('small', { class: 'agents-warn',
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
@@ -213,7 +214,7 @@
             field('API key', apiKey, 'Stored on the server only, never shown again.'),
             el('div', { class: 'agents-inline' }, field('Model', model), fetchBtn), models,
             el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx),
-                field('Timeout (seconds)', timeout)));
+                field('Timeout (seconds)', timeout), field('Max tool steps per turn', steps)));
         const cliBox = el('div', { class: 'agents-group' }, field('Model', cliModel));
         const toolsBox = el('div', { class: 'agents-group' },
             field('Working directory', cwd, 'Where the agent reads, edits and runs things.'),
@@ -260,7 +261,8 @@
                 Object.assign(spec, { base_url: baseUrl.value.trim(), api_format: apiFormat.value,
                     api_key: apiKey.value, model: model.value.trim(),
                     temperature: temp.value === '' ? null : Number(temp.value),
-                    context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null });
+                    context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null,
+                    max_tool_steps: Number(steps.value) || null });
             } else {
                 Object.assign(spec, { model: cliModel.value.trim() });
             }

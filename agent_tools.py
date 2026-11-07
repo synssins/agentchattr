@@ -26,7 +26,7 @@ from pathlib import Path
 
 SKILL_DIRS = [Path.home() / ".agents/skills", Path.home() / ".claude/skills"]
 MAX_OUT = 12000
-CMD_TIMEOUT = 120
+CMD_TIMEOUT = 600  # test suites and builds can take minutes
 
 
 def skills() -> dict[str, dict]:

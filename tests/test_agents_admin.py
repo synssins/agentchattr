@@ -506,3 +506,32 @@ class RulebooksTest(unittest.TestCase):
         msg = self.rb.review_message(self.rb.find("story writing"), ["kestrel"], "Once upon a time.")
         self.assertTrue(msg.startswith("@kestrel Please review"))
         self.assertIn("Once upon a time.", msg)
+
+
+class ToolBudgetTest(unittest.TestCase):
+    def test_out_of_steps_asks_for_summary(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "max_tool_steps": 2, "cwd": tmp.name})
+        store.add("alice", "@q work")
+        calls = []
+
+        def fake(spec, system, msgs, tools=None):
+            calls.append(tools)
+            if tools:
+                return {"content": "", "tool_calls": [{"id": str(len(calls)), "type": "function",
+                        "function": {"name": "list_dir", "arguments": "{}"}}]}
+            return {"content": "Did X, Y left."}
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = fake
+        try:
+            self.assertEqual(agent_runner.Runner(mgr, "q")._api_turn("general"), "Did X, Y left.")
+        finally:
+            agent_runner.call_api_message = orig
+        self.assertEqual(len(calls), 3)          # 2 tool rounds, then one summary call
+        self.assertIsNone(calls[-1])             # summary call has no tools
