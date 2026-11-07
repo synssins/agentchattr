@@ -932,7 +932,8 @@ async def _handle_new_message(msg: dict):
     for target in targets:
         # Channel membership (Settings > Agents > Channels): not woken outside its channels
         if agent_manager and not agent_manager.in_channel(target, channel):
-            if _re.search(rf"@{_re.escape(target)}(?![\w-])", text, _re.I):
+            # Only tell a human; agents name-dropping each other is just banter
+            if sender not in known_agents and _re.search(rf"@{_re.escape(target)}(?![\w-])", text, _re.I):
                 store.add("system", f"{target} isn't in #{channel} (see Settings > Agents).",
                           msg_type="system", channel=channel)
             continue

@@ -192,3 +192,34 @@ class PersonaTest(unittest.TestCase):
         self.mgr.spawn("qwen", "dev")
         self.assertNotIn("persona", self.mgr.specs["qwen-2"])
         self.assertIn("no persona yet", agent_runner.Runner(self.mgr, "qwen-2")._system())
+
+
+class TurnTakingTest(unittest.TestCase):
+    def test_turns_in_a_channel_are_sequential_and_see_each_other(self):
+        import threading as th
+        import time as tm
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        for n in ("a", "b"):
+            mgr.upsert({"name": n, "kind": "api", "base_url": "http://x/v1"})
+        seen = {}
+
+        def make(name):
+            r = agent_runner.Runner(mgr, name)
+            def api_turn(ch):
+                seen[name] = [m["text"] for m in store.get_recent(10, channel=ch)]
+                tm.sleep(0.2)
+                return f"I am {name}"
+            r._api_turn = api_turn
+            return r
+        store.add("alice", "@all names please")
+        threads = [th.Thread(target=make(n)._turn, args=("general",)) for n in ("a", "b")]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        first, second = sorted(seen, key=lambda n: len(seen[n]))
+        self.assertIn(f"I am {first}", seen[second])  # the second saw the first's reply

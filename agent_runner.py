@@ -230,12 +230,24 @@ class Runner:
             rules = []
         if rules:
             parts.append("Room rules: " + "; ".join(rules))
-        others = [n for n in self.m.hub.registry.get_active_names() if n != self.name]
+        others = [n for n in self.m.hub.registry.get_active_names()
+                  if n != self.name and self.m.in_channel(n, channel)]
         if others:
-            parts.append("Agents online: " + ", ".join(others) + ".")
+            lines = []
+            for n in others:
+                p = (self.m.specs.get(n, {}).get("persona") or "").strip().replace("\n", " ")
+                lines.append(f"@{n}" + (f": {p[:200]}" if p else " (no persona yet)"))
+            parts.append("Other agents in this channel:\n" + "\n".join(lines) + "\nYour persona and any "
+                         "name you choose must be distinct from theirs and from names already used in the chat.")
         return "\n\n".join(parts)
 
     def _turn(self, channel: str):
+        # One server agent at a time per channel: each turn starts from the latest
+        # transcript, so agents answering the same @all see and react to each other.
+        with self.m.channel_lock(channel):
+            self._turn_locked(channel)
+
+    def _turn_locked(self, channel: str):
         hub = self.m.hub
         self.working = True
         try:
@@ -319,6 +331,7 @@ class AgentManager:
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}
         self.runners: dict[str, Runner] = {}
+        self._channel_locks: dict[str, threading.Lock] = {}
         # Channel membership for every agent (managed or not): #general holds
         # everyone; other channels hold only the agents added to them.
         self.members_path = Path(data_dir) / "channel_members.json"
@@ -343,6 +356,10 @@ class AgentManager:
     def save_state(self):
         with self.lock:
             self._write(self.state_path, self.state)
+
+    def channel_lock(self, channel: str) -> threading.Lock:
+        with self.lock:
+            return self._channel_locks.setdefault(channel, threading.Lock())
 
     def in_channel(self, name: str, channel: str) -> bool:
         return channel == "general" or name in self.members.get(channel, [])
