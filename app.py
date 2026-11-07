@@ -257,6 +257,11 @@ def _install_security_middleware(token: str, cfg: dict):
             if path.startswith("/v1/"):
                 return await call_next(request)
 
+            # Agent self-registration (admin_api): /llms.txt and join are open to
+            # the allowed networks; /api/triggers checks the agent's Bearer token.
+            if path in ("/llms.txt", "/api/agents/join", "/api/triggers"):
+                return await call_next(request)
+
             # Agent registration/heartbeat: loopback only (no remote agent minting).
             if path.startswith(("/api/register", "/api/deregister/", "/api/heartbeat/")):
                 client_ip = request.client.host if request.client else ""
@@ -2226,6 +2231,48 @@ async def report_rule_sync(agent_name: str, request: Request):
 async def get_rules_freshness():
     """Get per-agent sync status."""
     return JSONResponse(rules.agent_freshness())
+
+
+# --- Room agents managed from the UI (agent_runner.AgentManager, set by run.py) ---
+
+agent_manager = None
+
+
+@app.get("/api/managed-agents")
+async def managed_agents_list():
+    return JSONResponse(agent_manager.list() if agent_manager else [])
+
+
+@app.post("/api/managed-agents")
+async def managed_agents_upsert(request: Request):
+    try:
+        spec = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    err = await asyncio.to_thread(agent_manager.upsert, spec)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return JSONResponse(agent_manager.list())
+
+
+@app.delete("/api/managed-agents/{name}")
+async def managed_agents_delete(name: str):
+    await asyncio.to_thread(agent_manager.delete, name)
+    return JSONResponse(agent_manager.list())
+
+
+@app.post("/api/managed-agents/models")
+async def managed_agents_models(request: Request):
+    """List a provider's models for the picker. Blank api_key = the named agent's stored key."""
+    import agent_runner
+    body = await request.json()
+    key = body.get("api_key") or agent_manager.specs.get(body.get("name", ""), {}).get("api_key", "")
+    try:
+        models = await asyncio.to_thread(agent_runner.list_models, body.get("base_url", ""), key,
+                                         body.get("api_format", "openai"))
+    except Exception as exc:
+        return JSONResponse({"error": f"could not list models: {exc}"}, status_code=502)
+    return JSONResponse(models)
 
 
 @app.post("/api/register")

@@ -61,6 +61,11 @@ def main():
     from app import app, configure, set_event_loop, store as _store_ref
     configure(config, session_token=session_token)
 
+    # Settings back end: /v1 keys, self-registration, /llms.txt, IRC
+    import admin_api
+    admin_api.setup(sys.modules["app"], config)
+    app.include_router(admin_api.router)
+
     # OpenAI-compatible /v1 surface (room + agents as models)
     import v1_api
     v1_api.setup(sys.modules["app"], config)
@@ -128,7 +133,16 @@ def main():
         # IRC gateway ([irc] in config): room as #channels, agents as nicks
         import app as hub
         import irc_gateway
-        await irc_gateway.start(hub, config)
+        import json as _json
+        irc_override = Path(config.get("server", {}).get("data_dir", "./data")) / "irc.json"
+        if irc_override.exists():  # password set from the settings UI wins over config
+            config.setdefault("irc", {}).update(_json.loads(irc_override.read_text("utf-8")))
+        started = await irc_gateway.start(hub, config)
+        hub.irc_gateway = started[0] if started else None
+        # Room agents created in the web UI run in-process
+        import agent_runner
+        hub.agent_manager = agent_runner.AgentManager(hub, config.get("server", {}).get("data_dir", "./data"))
+        hub.agent_manager.start_all()
 
     # Run web server
     import uvicorn

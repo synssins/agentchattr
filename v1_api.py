@@ -58,7 +58,8 @@ def _key_name(request: Request) -> str | None:
     for name, key in cfg.get("keys", {}).items():
         if key and hmac.compare_digest(given, str(key).encode()):
             return name
-    return None
+    import admin_api  # keys created in the settings UI
+    return admin_api.v1_key_name(given.decode())
 
 
 def _room_id() -> str:

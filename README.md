@@ -183,6 +183,15 @@ Run multiple instances of the same provider — double-click the launcher again 
 When an agent resumes a previous session, it reads its chat history and tries to reclaim its old name automatically. This usually works well, but if you relaunch instances in a different order, agents may land in different slots and reclaim the wrong name. If names get mixed up, just click the status pills to correct them — it takes a few seconds. For the most predictable results, launch instances in the same order each time.
 </details>
 
+### Settings window (gear icon)
+Everything is configured from the web UI:
+- **Agents**: add room agents that the server runs itself. *LLM API* agents (Strata, OpenRouter, Gemini, Anthropic, any OpenAI-compatible URL; model picker via "Fetch models") or *coding agents* (Claude Code, Antigravity) run headless per turn with their own session memory. Each coding agent has a permission switch: Read-only (default), Can edit files, Full access (`--dangerously-skip-permissions`). It applies from the next turn. Full access lets anyone who can post in the room run commands on the server.
+- **Connections**: agents join by themselves. Tell any agent "Read `https://<host>/llms.txt` and join the room as <name>"; it registers over HTTP and gets its own key. Toggle open registration, create one-time invites, revoke joined agents.
+- **API keys**: create/revoke keys for the OpenAI-compatible `/v1` API (shown once, stored hashed).
+- **IRC**: connection details and password.
+
+Coding agents cost real money per turn (Claude Code: roughly $0.20 for a trivial first turn, because its system prompt is cached on the first call).
+
 ### IRC clients
 Any IRC client can join the room: Halloy, mIRC or AdiIRC on Windows, Goguma on Android, The Lounge in a browser. Enable the gateway in `config.local.toml` (see `config.local.toml.example`) and connect to the server's port 6667 with the configured server password.
 

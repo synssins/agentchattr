@@ -4639,3 +4639,162 @@ a.file-attachment:hover { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
     .member-working .member-dot { animation: none; }
 }
+
+/* --- Settings window (gear): categories left, settings right --- */
+.settings-dialog {
+    margin: auto;   /* the page reset zeroes <dialog>'s centring margins */
+    width: min(980px, calc(100vw - 32px));
+    height: min(720px, calc(100vh - 32px));
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+}
+.settings-dialog[open] { display: flex; }
+.settings-dialog::backdrop { background: var(--bg-overlay); }
+.settings-nav {
+    width: 200px;
+    flex-shrink: 0;
+    padding: 16px 8px;
+    background: var(--bg-header);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.settings-nav-title {
+    padding: 4px 12px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+.settings-nav-item {
+    text-align: left;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+.settings-nav-item:hover { background: var(--bg-msg-hover); }
+.settings-nav-item[aria-current="page"] { background: var(--accent-soft); color: var(--text-on-accent); }
+.settings-panel {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 24px 28px;
+}
+.settings-panel h2 { margin: 0 0 6px; font-size: 18px; color: var(--text-on-accent); }
+.settings-panel h3 { margin: 24px 0 8px; font-size: 14px; color: var(--text-on-accent); }
+.settings-intro { margin: 0 0 16px; color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.settings-close {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    font-size: 22px;
+    cursor: pointer;
+}
+.settings-close:hover { color: var(--text); }
+.settings-panel #settings-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 0;
+    border: none;
+    background: none;
+    max-height: none;
+    overflow: visible;
+}
+.settings-panel .settings-field label { min-width: 110px; }
+.settings-row { margin: 16px 0; }
+.settings-secret-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--bg-elevated);
+}
+.settings-secret-box small { color: var(--text-dim); }
+.settings-secret { flex: 1; min-width: 0; font-family: monospace; }
+.settings-table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0 16px; }
+.settings-table th { text-align: left; color: var(--text-dim); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.settings-table td { padding: 8px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+
+/* Agents section */
+.agents-head { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.agents-head h2 { flex: 1; margin: 0; }
+.agents-empty { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.agents-list { display: flex; flex-direction: column; gap: 6px; }
+.agents-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-msg);
+}
+.agents-swatch { width: 10px; height: 32px; border-radius: 4px; flex-shrink: 0; }
+.agents-info { flex: 1; min-width: 0; }
+.agents-name { font-weight: 600; color: var(--text-on-accent); }
+.agents-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agents-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.agents-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.agents-btn:hover { border-color: var(--accent); }
+.agents-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
+.agents-btn.danger:hover { border-color: var(--danger); color: var(--error-color); }
+.settings-panel input:not([type=checkbox]):not([type=color]),
+.settings-panel select,
+.settings-panel textarea {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 7px 10px;
+    font: inherit;
+    font-size: 13px;
+}
+.settings-panel input:focus-visible, .settings-panel select:focus-visible, .settings-panel textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+.agents-perm[data-perm="full"], .agents-perm option[value="full"] { color: var(--warning); }
+.agents-form { display: flex; flex-direction: column; gap: 14px; }
+.agents-form h2 { margin: 0; }
+.agents-group { display: flex; flex-direction: column; gap: 14px; }
+.agents-group[hidden] { display: none; }
+.agents-field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 12px; color: var(--text-dim); }
+.agents-field textarea { resize: vertical; }
+.agents-field small { color: var(--text-dim); }
+.agents-inline { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.agents-inline .agents-field { min-width: 140px; }
+.agents-warn { color: var(--warning); font-size: 12px; }
+.agents-actions { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 700px) {
+    .settings-dialog[open] { flex-direction: column; }
+    .settings-nav { width: auto; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); }
+    .settings-nav-title { display: none; }
+}
