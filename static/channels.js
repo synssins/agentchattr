@@ -635,7 +635,7 @@ function _restoreSidebarState() {
             panel.style.width = savedWidth + 'px';
         }
     }
-    const savedMode = localStorage.getItem(SIDEBAR_MODE_KEY) || 'top';
+    const savedMode = localStorage.getItem(SIDEBAR_MODE_KEY) || 'sidebar';
     setChannelSidebarMode(savedMode, false);
 }
 

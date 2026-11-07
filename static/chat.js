@@ -1322,6 +1322,7 @@ function buildStatusPills() {
         container.appendChild(pill);
     }
     enableDragScroll(container);
+    renderMembers();
 }
 
 // --- Role presets (shared by pill popover + bubble picker) ---
@@ -1851,7 +1852,68 @@ const _ROLE_EMOJI = {
     'chaos gremlin': '😈', 'red team': '🛡️', 'roast': '🔥', 'hype': '🎉',
 };
 
+// --- Members panel (Discord-style member list) ---
+
+let _memberStatus = {};
+
+function renderMembers() {
+    const list = document.getElementById('members-list');
+    if (!list) return;
+    list.textContent = '';
+    const rows = [{ name: username, label: username, color: 'var(--user-color)', state: 'online', role: 'you' }];
+    for (const [name, cfg] of Object.entries(agentConfig)) {
+        const st = _memberStatus[name] || {};
+        const state = st.available ? (st.busy ? 'working' : 'online') : 'offline';
+        rows.push({ name, label: cfg.label || name, color: colorOverrides[name] || cfg.color || '#888',
+                    state, role: _agentRoles[name] || '' });
+    }
+    const groups = [['Online', rows.filter(r => r.state !== 'offline')],
+                    ['Offline', rows.filter(r => r.state === 'offline')]];
+    for (const [title, members] of groups) {
+        if (!members.length) continue;
+        const h = document.createElement('div');
+        h.className = 'members-group';
+        h.textContent = `${title} — ${members.length}`;
+        list.appendChild(h);
+        for (const m of members) {
+            const row = document.createElement('div');
+            row.className = `member member-${m.state}`;
+            row.style.setProperty('--agent-color', m.color);
+            row.title = m.role === 'you' ? 'You' : `@${m.name} — click to mention`;
+            const av = document.createElement('div');
+            av.className = 'member-avatar';
+            av.textContent = (m.label || '?').slice(0, 2).toUpperCase();
+            const dot = document.createElement('span');
+            dot.className = 'member-dot';
+            av.appendChild(dot);
+            const text = document.createElement('div');
+            text.className = 'member-text';
+            const nm = document.createElement('div');
+            nm.className = 'member-name';
+            nm.textContent = m.label;
+            const sub = document.createElement('div');
+            sub.className = 'member-sub';
+            sub.textContent = m.state === 'working' ? 'working…' : (m.role === 'you' ? 'you' : (m.role || m.state));
+            text.append(nm, sub);
+            row.append(av, text);
+            if (m.role !== 'you') {
+                row.addEventListener('click', () => {
+                    const input = document.getElementById('input');
+                    input.value = (input.value && !input.value.endsWith(' ') ? input.value + ' ' : input.value) + `@${m.name} `;
+                    input.focus();
+                });
+            }
+            list.appendChild(row);
+        }
+    }
+    document.getElementById('members-count').textContent = rows.filter(r => r.state !== 'offline').length;
+}
+
 function updateStatus(data) {
+    for (const [name, info] of Object.entries(data)) {
+        if (name !== 'paused') _memberStatus[name] = info;
+    }
+    renderMembers();
     for (const [name, info] of Object.entries(data)) {
         if (name === 'paused') continue;
         const pill = document.getElementById(`status-${name}`);
@@ -1911,6 +1973,7 @@ function applySettings(data) {
         username = data.username;
         document.getElementById('sender-label').textContent = username;
         document.getElementById('setting-username').value = username;
+        renderMembers();
     }
     if (data.font) {
         document.body.classList.remove('font-mono', 'font-serif', 'font-sans');

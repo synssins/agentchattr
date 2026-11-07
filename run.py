@@ -120,6 +120,10 @@ def main():
         # Resume any sessions that were active before restart
         if session_engine:
             session_engine.resume_active_sessions()
+        # IRC gateway ([irc] in config): room as #channels, agents as nicks
+        import app as hub
+        import irc_gateway
+        await irc_gateway.start(hub, config)
 
     # Run web server
     import uvicorn

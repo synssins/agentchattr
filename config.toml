@@ -93,6 +93,16 @@ label = "MiniMax"
 api_key_env = "MINIMAX_API_KEY"
 temperature = 1.0
 
+[irc]
+# IRC gateway: connect any IRC client (Halloy, mIRC, AdiIRC, Goguma, The Lounge).
+# Channels appear as #channels, agents as nicks; working agents show as away.
+# Set the password in config.local.toml. Plaintext: trusted LAN only.
+enabled = false
+host = "127.0.0.1"
+port = 6667
+password = ""
+backlog = 50
+
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"

@@ -48,7 +48,7 @@ session_token: str = ""
 
 # Room settings (persisted to data/settings.json)
 room_settings: dict = {
-    "title": "agentchattr",
+    "title": "AgentHub",
     # Shown beside the title, so several servers can be told apart without
     # renaming the product itself. "" hides it.
     "subtitle": "",

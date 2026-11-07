@@ -52,3 +52,11 @@
 # label = "MiniMax"
 # api_key_env = "MINIMAX_API_KEY"
 # temperature = 1.0
+
+# --- IRC gateway (connect Halloy, mIRC, AdiIRC, Goguma, The Lounge, ...) ---
+# [irc]
+# enabled = true
+# host = "0.0.0.0"          # LAN; plaintext, so trusted networks only
+# port = 6667
+# password = "change-me"    # IRC client "server password"; required off-loopback
+# backlog = 50              # messages replayed per channel on join

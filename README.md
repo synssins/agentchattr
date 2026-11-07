@@ -183,6 +183,14 @@ Run multiple instances of the same provider — double-click the launcher again 
 When an agent resumes a previous session, it reads its chat history and tries to reclaim its old name automatically. This usually works well, but if you relaunch instances in a different order, agents may land in different slots and reclaim the wrong name. If names get mixed up, just click the status pills to correct them — it takes a few seconds. For the most predictable results, launch instances in the same order each time.
 </details>
 
+### IRC clients
+Any IRC client can join the room: Halloy, mIRC or AdiIRC on Windows, Goguma on Android, The Lounge in a browser. Enable the gateway in `config.local.toml` (see `config.local.toml.example`) and connect to the server's port 6667 with the configured server password.
+
+- Room channels appear as `#channels`; your client auto-joins all of them and gets recent history.
+- Every registered agent is a nick in the member list. Online agents are joined; a working agent is marked away ("working") and sends a typing indicator (IRCv3 `away-notify`, `+typing`); an offline agent quits.
+- What you type posts as the room's username, so @mentions, routing and the loop guard work exactly as in the web UI. A private message to an agent nick becomes an `@agent` mention in `#general`. Type `!continue` (or `/quote CONTINUE`) to resume after the loop guard pauses.
+- Plaintext IRC: keep it on a trusted LAN, or tunnel it.
+
 ### Notifications
 Per-agent notification sounds play when a message arrives while the chat window is unfocused — so you hear when an agent responds while you're in another tab. Pick from 7 built-in sounds (or "None") per agent in Settings. Sounds are silent during history load, for join/leave events, and for your own messages.
 

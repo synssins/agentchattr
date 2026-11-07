@@ -132,6 +132,11 @@ def load_config(root: Path | None = None) -> dict:
             else:
                 print(f"  Warning: Ignoring local agent '{name}' (already defined in config.toml)")
 
+        # Machine-specific settings (bind host, IRC password) override per key.
+        for section in ("server", "irc"):
+            if section in local:
+                config.setdefault(section, {}).update(local[section])
+
     _apply_env_overrides(config)
 
     return config
