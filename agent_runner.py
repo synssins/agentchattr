@@ -167,10 +167,19 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str,
         cmd = [exe, "-p", prompt if session else f"{system}\n\n{prompt}", "--output-format", "json"]
         if session:
             cmd += ["--conversation", session]
+        # agy's own ~/.gemini/antigravity-cli/settings.json can deny command/write_file/mcp,
+        # and deny rules beat --dangerously-skip-permissions. --settings is session-only
+        # (never saved), so the room's permission switch wins without touching that file.
         if perm == "full":
-            cmd += ["--dangerously-skip-permissions"]
+            cmd += ["--dangerously-skip-permissions", "--settings", json.dumps({"permissions": {
+                "allow": ["read_url(*)", "command(*)", "write_file(*)", "mcp(*)", "execute_url(*)",
+                          "unsandboxed(*)"], "deny": []}})]
+        elif perm == "edit":
+            cmd += ["--mode", "accept-edits", "--settings", json.dumps({"permissions": {
+                "allow": ["read_url(*)", "write_file(*)"],
+                "deny": ["command(*)", "mcp(*)", "execute_url(*)", "unsandboxed(*)"]}})]
         else:
-            cmd += ["--mode", "accept-edits" if perm == "edit" else "plan"]
+            cmd += ["--mode", "plan"]
     if spec.get("model"):
         cmd += ["--model", spec["model"]]
     return cmd

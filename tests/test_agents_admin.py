@@ -36,6 +36,13 @@ class CliFlagsTest(unittest.TestCase):
         self.assertIn("accept-edits", self.cmd("agy", "edit"))
         self.assertIn("--dangerously-skip-permissions", self.cmd("agy", "full"))
         self.assertIn("--conversation", self.cmd("agy", "read", "c1"))
+        full = self.cmd("agy", "full")
+        perms = json.loads(full[full.index("--settings") + 1])["permissions"]
+        self.assertEqual(perms["deny"], [])                      # overrides agy's global denies
+        self.assertIn("command(*)", perms["allow"])
+        edit = self.cmd("agy", "edit")
+        self.assertIn("command(*)", json.loads(edit[edit.index("--settings") + 1])["permissions"]["deny"])
+        self.assertNotIn("--settings", self.cmd("agy", "read"))
 
     def test_parse_cli_output(self):
         out = json.dumps({"result": " hello ", "session_id": "s1"})
