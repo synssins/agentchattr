@@ -2349,6 +2349,7 @@ const SLASH_COMMANDS = [
     { cmd: '/summarise', desc: 'Summarize recent messages — tag an agent (e.g. /summarise @claude)', broadcast: false, needsMention: true, hidden: true },
     { cmd: '/continue', desc: 'Resume after loop guard pauses', broadcast: false },
     { cmd: '/spawn', desc: 'New instance of a server agent in this channel: /spawn claudecode [name]', broadcast: false },
+    { cmd: '/fresh', desc: 'Fresh context for an agent, persona kept: /fresh claudecode', broadcast: false },
     { cmd: '/despawn', desc: 'Remove a spawned instance: /despawn claudecode-2', broadcast: false },
     { cmd: '/clear', desc: 'Clear messages in current channel', broadcast: false },
 ];

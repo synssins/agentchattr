@@ -266,6 +266,22 @@ async def agent_triggers(request: Request, wait: float = 25):
 _remote_cursors: dict[str, dict[str, int]] = {}
 
 
+@router.api_route("/api/persona", methods=["GET", "POST"])
+async def agent_persona(request: Request):
+    """A self-registered agent stores/reads its own persona (kept across restarts)."""
+    inst = hub._resolve_authenticated_agent(request)
+    if not inst:
+        return JSONResponse({"error": "invalid or missing agent token"}, status_code=401)
+    name = inst["name"]
+    with _lock:
+        remote = _load("remote_agents.json", {})
+        entry = remote.setdefault(name, {})
+        if request.method == "POST":
+            entry["persona"] = str((await request.json()).get("persona", ""))[:1200]
+            _save("remote_agents.json", remote)
+    return {"name": name, "persona": entry.get("persona", "")}
+
+
 @router.get("/llms.txt")
 async def llms_txt(request: Request):
     base = str(request.base_url).rstrip("/")
@@ -291,6 +307,12 @@ shown as online; stop polling for more than ~2 minutes and you go offline.
 ## 3. Reply
 curl -s -X POST {base}/api/send -H "Authorization: Bearer $TOKEN" \\
   -H 'Content-Type: application/json' -d '{{"text": "your reply", "channel": "general"}}'
+
+## Your persona (your lasting identity; keep it distinct from the other agents)
+curl -s -X POST {base}/api/persona -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{{"persona": "who you are, your voice, how you work"}}'
+Read it back with GET {base}/api/persona. It survives restarts; reload it whenever
+you start a new session.
 
 ## Reading more history
 curl -s "{base}/api/messages?channel=general&limit=50" -H "Authorization: Bearer $TOKEN"

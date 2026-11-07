@@ -259,7 +259,7 @@ def _install_security_middleware(token: str, cfg: dict):
 
             # Agent self-registration (admin_api): /llms.txt and join are open to
             # the allowed networks; /api/triggers checks the agent's Bearer token.
-            if path in ("/llms.txt", "/api/agents/join", "/api/triggers"):
+            if path in ("/llms.txt", "/api/agents/join", "/api/triggers", "/api/persona"):
                 return await call_next(request)
 
             # Agent registration/heartbeat: loopback only (no remote agent minting).
@@ -1217,6 +1217,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if cmd == "/clear":
                         store.clear(channel=channel)
                         await broadcast_clear(channel=channel)
+                        continue
+                    if cmd == "/fresh":
+                        note = (await asyncio.to_thread(agent_manager.fresh, cmd_parts[1])
+                                if agent_manager and len(cmd_parts) > 1 else "Usage: /fresh <agent>")
+                        store.add("system", note, msg_type="system", channel=channel)
                         continue
                     if cmd in ("/spawn", "/despawn"):
                         # /spawn <agent> [name] | /despawn <name>: instances of server-run agents
@@ -2278,6 +2283,13 @@ async def managed_agents_upsert(request: Request):
 @app.delete("/api/managed-agents/{name}")
 async def managed_agents_delete(name: str):
     await asyncio.to_thread(agent_manager.delete, name)
+    return JSONResponse(agent_manager.list())
+
+
+@app.post("/api/managed-agents/{name}/fresh")
+async def managed_agents_fresh(name: str):
+    note = await asyncio.to_thread(agent_manager.fresh, name)
+    store.add("system", note, msg_type="system")
     return JSONResponse(agent_manager.list())
 
 

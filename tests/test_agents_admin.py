@@ -162,3 +162,33 @@ class SpawnTest(unittest.TestCase):
         self.assertEqual(mgr.despawn("qwen-2"), "Removed @qwen-2.")
         self.assertNotIn("qwen-2", mgr.specs)
         self.assertEqual(mgr.channels_of("qwen-2"), ["general"])  # membership cleaned up
+
+
+class PersonaTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=self.store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        self.mgr = agent_runner.AgentManager(hub, tmp.name)
+        self.mgr._apply = lambda name: None
+        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "persona": "Grumpy QA."})
+
+    def test_agent_sets_persona_from_reply(self):
+        r = agent_runner.Runner(self.mgr, "qwen")
+        r._api_turn = lambda ch: "Fine.\n[persona]Dry-witted reviewer who blames the build.[/persona]"
+        r._turn("general")
+        self.assertEqual(self.mgr.specs["qwen"]["persona"], "Dry-witted reviewer who blames the build.")
+        posted = [m["text"] for m in self.store.get_recent(5) if m["sender"] == "qwen"]
+        self.assertEqual(posted, ["Fine."])  # block stripped from the posted message
+
+    def test_persona_in_prompt_kept_on_fresh_not_copied_on_spawn(self):
+        self.store.add("alice", "old")
+        self.assertIn("Grumpy QA.", agent_runner.Runner(self.mgr, "qwen")._system())
+        self.mgr.fresh("qwen")
+        self.assertEqual(self.mgr.specs["qwen"]["persona"], "Grumpy QA.")
+        self.assertEqual(self.mgr.specs["qwen"]["context_from"], 1)
+        self.mgr.spawn("qwen", "dev")
+        self.assertNotIn("persona", self.mgr.specs["qwen-2"])
+        self.assertIn("no persona yet", agent_runner.Runner(self.mgr, "qwen-2")._system())

@@ -36,6 +36,13 @@ PERMISSIONS = ("read", "edit", "full")
 NO_REPLY = "(no reply)"
 CLI_TIMEOUT = 30 * 60
 
+PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
+PERSONA_HELP = (
+    "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
+    "others. It follows you across projects and context resets. To set or rewrite it, put the "
+    "full new text in your reply between [persona] and [/persona] (under 1200 characters). "
+    "That block is saved and removed from the posted message.")
+
 ROOM_PROMPT = (
     "You are {name} in AgentHub, a shared chat room with other AI agents and one human "
     "(the owner). Messages addressed to you arrive as a transcript. Reply with only the text "
@@ -104,6 +111,8 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str) -> li
             # -p mode denies anything not allowed; no prompt can appear
             cmd += ["--allowedTools", "Read", "Grep", "Glob", "LS"]
     else:  # agy: no system-prompt flag, so the room prompt rides in the first turn
+        if session and spec.get("persona"):  # persona can change mid-session: restate it
+            prompt = f"(Your current persona: {spec['persona']})\n\n{prompt}"
         cmd = [exe, "-p", prompt if session else f"{system}\n\n{prompt}", "--output-format", "json"]
         if session:
             cmd += ["--conversation", session]
@@ -200,7 +209,11 @@ class Runner:
 
     def _system(self, channel: str = "general") -> str:
         import mcp_bridge
-        parts = [ROOM_PROMPT.format(name=self.name)]
+        parts = [ROOM_PROMPT.format(name=self.name), PERSONA_HELP]
+        persona = self.spec.get("persona")
+        parts.append(f"Your persona (written by you):\n{persona}" if persona else
+                     "You have no persona yet. Define one, distinct from the other agents, the first "
+                     "time you're asked to or when it fits.")
         if not self._addressed(channel):
             parts.append(
                 "The latest message did not name you; it went to everyone (@all). Answer only if it asks all "
@@ -232,6 +245,12 @@ class Runner:
             else:
                 reply = self._cli_turn(channel)
             reply = (reply or "").strip()
+            found = PERSONA_RE.findall(reply)
+            if found:
+                self.m.set_persona(self.name, found[-1].strip())
+                reply = PERSONA_RE.sub("", reply).strip()
+                hub.store.add("system", f"{self.name} updated its persona.", msg_type="system",
+                              channel=channel)
             for prefix in (f"{self.name}: ", f"{self.name}:"):
                 if reply.startswith(prefix):
                     reply = reply[len(prefix):].strip()
@@ -377,6 +396,8 @@ class AgentManager:
 
     def upsert(self, spec: dict) -> str | None:
         src = spec.pop("copy_key_from", None)
+        if src:
+            spec.pop("persona", None)  # duplicates get their own persona
         spec = {k: v for k, v in spec.items() if k not in ("running", "has_api_key", "duplicateOf")}
         old = self.specs.get(spec.get("name", "")) or self.specs.get(src or "", {})
         if not spec.get("api_key") and old.get("api_key"):
@@ -406,12 +427,31 @@ class AgentManager:
             while f"{src['name']}-{n}" in self.specs or self.hub.registry.get_instance(f"{src['name']}-{n}"):
                 n += 1
             name = f"{src['name']}-{n}"
-        spec = {k: v for k, v in src.items() if k not in ("label", "channels")}
+        # persona and memory are per instance: the new one defines its own
+        spec = {k: v for k, v in src.items() if k not in ("label", "channels", "persona")}
         spec.update(name=name.lstrip("@").lower(), channels=[channel], enabled=True, spawned=True,
                     context_from=self.hub.store.last_id + 1)
         err = self.upsert(spec)
         return err or (f"Spawned @{spec['name']} (new instance of @{src['name']}) in #{channel}, "
                        f"starting with fresh context. Remove it with /despawn {spec['name']}.")
+
+    def set_persona(self, name: str, text: str):
+        if name in self.specs:
+            self.specs[name]["persona"] = text[:1200]
+            with self.lock:
+                self.save()
+
+    def fresh(self, name: str) -> str:
+        """New context, same persona: drop CLI sessions, start the conversation now."""
+        name = name.lstrip("@").lower()
+        if name not in self.specs:
+            return f"No agent '{name}' runs on this server."
+        with self.lock:
+            self.state.pop(name, None)
+            self.specs[name]["context_from"] = self.hub.store.last_id + 1
+            self.save()
+        self.save_state()
+        return f"@{name} starts with a fresh context (its persona is kept)."
 
     def despawn(self, name: str) -> str:
         name = name.lstrip("@").lower()

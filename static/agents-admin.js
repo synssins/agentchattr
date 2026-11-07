@@ -97,8 +97,14 @@
                 a.kind === 'api' ? el('span') : permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
+                el('button', { class: 'agents-btn', text: 'New context', title: 'Forget sessions and conversation; keep the persona',
+                    onclick: async () => {
+                        if (!confirm(`Give @${a.name} a fresh context? Its session memory is dropped; its persona stays.`)) return;
+                        agents = await api('POST', `/api/managed-agents/${encodeURIComponent(a.name)}/fresh`);
+                        renderList();
+                    } }),
                 el('button', { class: 'agents-btn', text: 'Duplicate', title: 'New instance with the same settings',
-                    onclick: () => renderForm({ ...a, name: '', label: '', duplicateOf: a.name }) }),
+                    onclick: () => renderForm({ ...a, name: '', label: '', persona: '', duplicateOf: a.name }) }),
                 el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
                     if (!confirm(`Delete ${a.name}? Its settings and session memory are removed; chat history stays.`)) return;
                     agents = await api('DELETE', `/api/managed-agents/${encodeURIComponent(a.name)}`);
@@ -152,6 +158,8 @@
         kind.value = a.kind || 'api';
         const prompt = el('textarea', { rows: 4, placeholder: 'Role and instructions, e.g. "You are the architect. Review designs for gaps before anyone builds."' });
         prompt.value = a.system_prompt || '';
+        const persona = el('textarea', { rows: 4, placeholder: 'Empty: the agent writes its own the first time it is asked (e.g. "@all pick a persona for yourselves").' });
+        persona.value = a.persona || '';
 
         // API fields
         const provider = el('select');
@@ -220,7 +228,9 @@
             el('div', { class: 'agents-inline' }, field('Name (@mention)', name), field('Label', label), field('Color', color)),
             field('Type', kind),
             apiBox, cliBox,
-            field('Role / instructions', prompt),
+            field('Role / instructions (from you)', prompt),
+            field('Persona (the agent\'s own identity; it can rewrite this itself)', persona,
+                'Kept across restarts and New context. Duplicates and spawns start without one.'),
             el('div', { class: 'agents-field' },
                 el('span', { text: 'Channels besides #general (every agent is always in #general)' }),
                 el('div', { class: 'agents-inline' }, ...chanBoxes.map(x => x.label)),
@@ -234,7 +244,7 @@
                 !confirm('Full access lets this agent run any command on this machine without asking. Continue?')) return;
             const spec = {
                 name: name.value.trim(), label: label.value.trim(), color: color.value, kind: kind.value,
-                system_prompt: prompt.value.trim(), enabled: a.enabled !== false,
+                system_prompt: prompt.value.trim(), persona: persona.value.trim(), enabled: a.enabled !== false,
                 channels: chanBoxes.filter(x => x.cb.checked).map(x => x.c),
             };
             if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
