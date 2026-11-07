@@ -108,8 +108,17 @@ class ToolRunner:
 
     def t_read_file(self, path: str, offset: int = 0, limit: int = 400) -> str:
         lines = self._path(path).read_text("utf-8", errors="replace").splitlines()
-        return "\n".join(lines[offset:offset + limit]) + (
-            f"\n…[{len(lines) - offset - limit} more lines]" if len(lines) > offset + limit else "")
+        offset, end, size = max(0, int(offset)), min(len(lines), max(0, int(offset)) + int(limit)), 0
+        stop = offset
+        while stop < end and size + len(lines[stop]) + 1 <= MAX_OUT - 300:  # whole lines only
+            size += len(lines[stop]) + 1
+            stop += 1
+        stop = max(stop, min(offset + 1, end))  # always return at least one line
+        out = "\n".join(lines[offset:stop])
+        if stop < len(lines):  # say exactly where to continue, so nobody guesses the rest
+            out += (f"\n…[shown lines {offset}-{stop - 1} of {len(lines)}; the file continues. "
+                    f"Call read_file with offset={stop} to read the rest.]")
+        return out
 
     def t_list_dir(self, path: str = ".") -> str:
         p = self._path(path)

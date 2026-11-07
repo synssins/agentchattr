@@ -408,6 +408,18 @@ class ToolLoopTest(unittest.TestCase):
         self.assertEqual(full.run("run_command", {"command": "echo a | tr a b"}), "exit 0\nb\n")
         self.assertIn("wrote", self.runner("edit").run("write_file", {"path": "out.txt", "content": "z"}))
 
+    def test_read_file_long_file_says_where_to_continue(self):
+        f = self.tmp / "work" / "long.md"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(f"line {i} " + "x" * 200 for i in range(200)))
+        r = self.runner("read")
+        first = r.run("read_file", {"path": str(f)})
+        self.assertLessEqual(len(first), self.at.MAX_OUT)
+        nxt = int(first.rsplit("offset=", 1)[1].split()[0].rstrip("."))
+        self.assertTrue(first.split("\n")[-2].startswith(f"line {nxt - 1} "))  # whole lines, no cut
+        rest = r.run("read_file", {"path": str(f), "offset": nxt})
+        self.assertTrue(rest.startswith(f"line {nxt} "))
+
     def test_loop_runs_tool_then_answers(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
