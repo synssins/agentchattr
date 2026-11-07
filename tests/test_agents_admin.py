@@ -393,7 +393,7 @@ class ToolLoopTest(unittest.TestCase):
         self.assertIn("off limits", r.run("read_file", {"path": "../data/secrets.json"}))
         self.assertIn("not allow", r.run("write_file", {"path": "x", "content": "y"}))
         self.assertIn("only these programs", r.run("run_command", {"command": "ls"}))
-        self.assertIn("no shell operators", r.run("run_command", {"command": "echo hi | cat"}))
+        self.assertIn("pipes and redirects are not allowed", r.run("run_command", {"command": "echo hi | cat"}))
         self.assertEqual(r.run("run_command", {"command": "echo hi"}), "exit 0\nhi\n")
         full = self.runner("full")
         self.assertEqual(full.run("run_command", {"command": "echo a | tr a b"}), "exit 0\nb\n")
