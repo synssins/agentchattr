@@ -1322,6 +1322,7 @@ function buildStatusPills() {
         container.appendChild(pill);
     }
     enableDragScroll(container);
+    _syncStatusPillVisibility();
     renderMembers();
 }
 
@@ -1973,9 +1974,24 @@ function openAddAgentPicker(anchor) {
     pick.addEventListener('keydown', (e) => { if (e.key === 'Escape') { pick.remove(); anchor.focus(); } });
 }
 
+let _membershipSig = '';
+
+function _syncStatusPillVisibility() {
+    for (const name of Object.keys(agentConfig)) {
+        const pill = document.getElementById(`status-${name}`);
+        if (pill) pill.hidden = !agentInActiveChannel(name);
+    }
+}
+
 function updateStatus(data) {
     for (const [name, info] of Object.entries(data)) {
         if (name !== 'paused') _memberStatus[name] = info;
+    }
+    const sig = JSON.stringify(Object.entries(_memberStatus).map(([n, i]) => [n, i.channels || []]));
+    if (sig !== _membershipSig) {   // someone joined/left a channel: refresh what can be tagged
+        _membershipSig = sig;
+        buildMentionToggles();
+        _syncStatusPillVisibility();
     }
     renderMembers();
     for (const [name, info] of Object.entries(data)) {
@@ -2412,11 +2428,18 @@ function selectSlashCommand(cmd) {
 
 // --- Mention autocomplete ---
 
+// Is an agent a member of the channel being viewed? #general has everyone;
+// other channels only the agents added to them (status carries the list).
+function agentInActiveChannel(name) {
+    if (activeChannel === 'general') return true;
+    return ((_memberStatus[name] || {}).channels || []).includes(activeChannel);
+}
+
 function getMentionCandidates() {
     // Build list: registered agents + "all agents" + username (self) + known humans
     const candidates = [];
     for (const [name, cfg] of Object.entries(agentConfig)) {
-        if (cfg.state === 'pending') continue;
+        if (cfg.state === 'pending' || !agentInActiveChannel(name)) continue;
         candidates.push({ name, label: cfg.label || name, color: cfg.color });
     }
     candidates.push({ name: 'all agents', label: 'all agents', color: 'var(--accent)' });
@@ -3225,10 +3248,8 @@ function renderTodosPanel() {
 window._onChannelSwitchMentions = function(oldChannel, newChannel) {
     if (oldChannel) _channelMentions[oldChannel] = [...activeMentions];
     activeMentions = new Set(_channelMentions[newChannel] || []);
-    // Reflect the swapped state on the toggle buttons
-    for (const btn of document.querySelectorAll('.mention-toggle')) {
-        btn.classList.toggle('active', activeMentions.has(btn.dataset.agent));
-    }
+    buildMentionToggles();   // this channel's members only (also restores active state)
+    _syncStatusPillVisibility();
     if (typeof updateSchedulePopoverState === 'function') updateSchedulePopoverState();
 };
 
@@ -3236,13 +3257,14 @@ function buildMentionToggles() {
     const container = document.getElementById('mention-toggles');
     container.innerHTML = '';
 
-    // Prune stale mentions for agents no longer in config
+    // Prune stale mentions for agents no longer in config or not in this channel
     for (const name of activeMentions) {
-        if (!(name in agentConfig)) activeMentions.delete(name);
+        if (!(name in agentConfig) || !agentInActiveChannel(name)) activeMentions.delete(name);
     }
 
     for (const [name, cfg] of Object.entries(agentConfig)) {
         if (cfg.state === 'pending') continue;  // skip pending instances
+        if (!agentInActiveChannel(name)) continue;  // only this channel's members
         const btn = document.createElement('button');
         btn.className = 'mention-toggle';
         btn.dataset.agent = name;

@@ -4851,3 +4851,5 @@ a.file-attachment:hover { border-color: var(--accent); }
     cursor: pointer;
 }
 .members-picker-item:hover, .members-picker-item:focus-visible { background: var(--accent-soft); }
+
+.status-pill[hidden] { display: none; }  /* agent not in the channel being viewed */
