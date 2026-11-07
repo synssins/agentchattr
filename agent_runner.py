@@ -17,6 +17,8 @@ Definitions live in data/managed_agents.json (0600: it holds provider API keys;
 they are never sent back to the browser).
 """
 
+from __future__ import annotations  # AgentManager.list shadows list[...] in annotations
+
 import json
 import logging
 import re
@@ -151,6 +153,7 @@ class Runner:
         self.name = name
         self.stop = threading.Event()
         self.working = False
+        self.proc: subprocess.Popen | None = None  # in-flight CLI turn, killed on shutdown
 
     @property
     def spec(self) -> dict:
@@ -168,6 +171,8 @@ class Runner:
 
     def shutdown(self):
         self.stop.set()
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
         try:
             self.m.hub.registry.deregister(self.name)
         except Exception:
@@ -318,11 +323,20 @@ class Runner:
         prompt = f"New messages in #{channel}:\n\n{transcript}\n\nYour reply to post in #{channel}:"
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
         cmd = cli_command(spec, prompt, session, self._system(channel))
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=CLI_TIMEOUT,
-                              stdin=subprocess.DEVNULL)
-        text, new_session = parse_cli_output(proc.stdout)
-        if proc.returncode != 0 and not text:
-            raise RuntimeError((proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()[-300:])
+        self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     stdin=subprocess.DEVNULL, text=True)
+        try:
+            stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            stdout, stderr = self.proc.communicate()
+        finally:
+            code, self.proc = self.proc.returncode, None
+        if self.stop.is_set():
+            return ""  # agent was removed mid-turn: post nothing
+        text, new_session = parse_cli_output(stdout)
+        if code != 0 and not text:
+            raise RuntimeError((stderr or stdout or f"exit {code}").strip()[-300:])
         state["cursors"][channel] = max(m["id"] for m in new)
         if new_session:
             state["sessions"][channel] = new_session
@@ -529,6 +543,33 @@ class AgentManager:
             self.runners[new] = Runner(self, new)
             self.runners[new].start()
         return f"@{old} is now @{new} ({label})."
+
+    def channel_deleted(self, channel: str) -> list[str]:
+        """Drop the channel's membership and sessions. Spawned instances that lived only
+        there are deleted (runner stopped, CLI process killed). -> deleted names."""
+        doomed = [n for n in self.members.get(channel, [])
+                  if self.specs.get(n, {}).get("spawned") and self.channels_of(n) == ["general", channel]]
+        for name in doomed:
+            self.delete(name)
+        with self.lock:
+            self.members.pop(channel, None)
+            self._write(self.members_path, self.members)
+            for st in self.state.values():
+                st.get("sessions", {}).pop(channel, None)
+                st.get("cursors", {}).pop(channel, None)
+        self.save_state()
+        return doomed
+
+    def channel_renamed(self, old: str, new: str):
+        with self.lock:
+            if old in self.members:
+                self.members[new] = self.members.pop(old)
+                self._write(self.members_path, self.members)
+            for st in self.state.values():
+                for key in ("sessions", "cursors"):
+                    if old in st.get(key, {}):
+                        st[key][new] = st[key].pop(old)
+        self.save_state()
 
     def despawn(self, name: str) -> str:
         name = name.lstrip("@").lower()

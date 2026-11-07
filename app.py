@@ -1518,6 +1518,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 store.rename_channel(old_name, new_name)
                 import mcp_bridge
                 mcp_bridge.migrate_cursors_rename(old_name, new_name)
+                if agent_manager:  # members and agent sessions follow the channel
+                    await asyncio.to_thread(agent_manager.channel_renamed, old_name, new_name)
                 _save_settings()
                 await broadcast_settings()
                 # Tell clients to migrate DOM elements
@@ -1544,6 +1546,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 mcp_bridge.migrate_cursors_delete(name)
                 _save_settings()
                 await broadcast_settings()
+                if agent_manager:
+                    # Spawned instances that lived only in this channel go with it
+                    removed = await asyncio.to_thread(agent_manager.channel_deleted, name)
+                    if removed:
+                        store.add("system", f"#{name} deleted; removed its agents: "
+                                  + ", ".join("@" + n for n in removed), msg_type="system")
+                    await broadcast_status()
 
     except WebSocketDisconnect:
         ws_clients.discard(websocket)

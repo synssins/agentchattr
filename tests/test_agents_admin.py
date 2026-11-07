@@ -257,3 +257,35 @@ class RenameTest(unittest.TestCase):
         finally:
             for x in list(mgr.runners.values()):
                 x.stop.set()
+
+
+class ChannelDeleteTest(unittest.TestCase):
+    def test_delete_removes_only_channel_bound_spawns(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store)
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1"})
+        mgr.spawn("agy", "sonorium")                      # agy-2: only in #sonorium
+        mgr.spawn("agy", "sonorium")                      # agy-3: also added to #other
+        mgr.set_member("agy-3", "other", True)
+        mgr.set_member("agy", "sonorium", True)           # original, added manually
+        mgr.set_member("remote-x", "sonorium", True)      # self-registered
+        mgr.state["agy"] = {"sessions": {"sonorium": "s1", "general": "s0"}, "cursors": {}}
+        self.assertEqual(mgr.channel_deleted("sonorium"), ["agy-2"])
+        self.assertEqual(sorted(mgr.specs), ["agy", "agy-3"])
+        self.assertEqual(mgr.channels_of("agy-3"), ["general", "other"])
+        self.assertEqual(mgr.channels_of("agy"), ["general"])
+        self.assertEqual(mgr.state["agy"]["sessions"], {"general": "s0"})
+        mgr.channel_renamed("other", "renamed")
+        self.assertEqual(mgr.channels_of("agy-3"), ["general", "renamed"])
+
+    def test_shutdown_kills_inflight_cli_process(self):
+        import subprocess as sp
+        r = agent_runner.Runner(types.SimpleNamespace(hub=types.SimpleNamespace(
+            registry=types.SimpleNamespace(deregister=lambda n: None))), "x")
+        r.proc = sp.Popen(["sleep", "30"])
+        r.shutdown()
+        self.assertIsNotNone(r.proc.wait(timeout=5))
