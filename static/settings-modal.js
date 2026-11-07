@@ -173,9 +173,9 @@
     // ------------------------------------------------------------ Secrets
     async function renderSecrets(panel, editing) {
         heading(panel, 'Secrets',
-            'Tokens for outside services (GitHub, cloud CLIs, ...). Each is given only to the agents you tick, as an environment variable in their process. Values are write-only. Only coding agents (Claude Code, agy) can use them.');
+            'Tokens for outside services (GitHub, cloud CLIs, ...). Each is given only to the agents you tick, as an environment variable in their process. Values are write-only. Agents use them in the commands they run.');
         const [secrets, agents] = await Promise.all([api('GET', '/api/admin/secrets'), api('GET', '/api/managed-agents')]);
-        const cli = agents.filter(a => a.kind !== 'api');
+        const cli = agents;  // every agent can use secrets in its commands
         const e = editing || {};
         const name = el('input', { value: e.name || '', placeholder: 'e.g. GitHub (Claude commits)', readonly: !!e.name });
         const env = el('input', { value: e.env || '', placeholder: 'GH_TOKEN' });
@@ -194,7 +194,7 @@
             el('label', { class: 'agents-field' }, el('span', { text: 'Value' }), value),
             el('div', { class: 'agents-field' }, el('span', { text: 'Agents allowed to use it' }),
                 cli.length ? el('div', { class: 'agents-inline' }, ...boxes.map(b => b.label))
-                           : el('small', { text: 'No coding agents yet (Settings > Agents).' })),
+                           : el('small', { text: 'No agents yet (Settings > Agents).' })),
             el('div', { class: 'agents-actions' },
                 e.name ? el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('secrets') }) : null,
                 el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save secret' })));

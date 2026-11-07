@@ -1,6 +1,7 @@
 """Managed-agent CLI flags and agent self-registration (join, invites, triggers, revoke)."""
 
 import json
+import os
 import sys
 import tempfile
 import types
@@ -318,17 +319,17 @@ class AttachmentTest(unittest.TestCase):
         import urllib.error
         calls = []
 
-        def fake(spec, system, msgs):
-            calls.append(msgs)
+        def fake(spec, system, msgs, tools=None):
+            calls.append([dict(m) for m in msgs])
             if len(calls) == 1:
                 raise urllib.error.HTTPError("u", 400, "no vision", {}, None)
-            return "ok"
-        orig = agent_runner.call_api
-        agent_runner.call_api = fake
+            return {"content": "ok"}
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = fake
         try:
             self.assertEqual(self.r._api_turn("general"), "ok")
         finally:
-            agent_runner.call_api = orig
+            agent_runner.call_api_message = orig
         parts = calls[0][-1]["content"]
         self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
         self.assertIsInstance(calls[1][-1]["content"], str)          # retry without the image
@@ -360,3 +361,73 @@ class SecretsTest(JoinTest):
         cmd = agent_runner.cli_command({"kind": "claude", "permissions": "full"}, "hi", None, "S",
                                        protect="/data/agenthub/data")
         self.assertIn("Read(/data/agenthub/data/**)", cmd)
+
+
+class ToolLoopTest(unittest.TestCase):
+    def setUp(self):
+        import agent_tools
+        self.at = agent_tools
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        (self.tmp / "work").mkdir()
+        (self.tmp / "work" / "notes.txt").write_text("line1\nline2\n")
+        (self.tmp / "data").mkdir()
+        (self.tmp / "data" / "secrets.json").write_text("SECRET")
+
+    def runner(self, perm, allowed=()):
+        return self.at.ToolRunner(str(self.tmp / "work"), perm, list(allowed), dict(os.environ),
+                                  protect=str(self.tmp / "data"))
+
+    def test_permission_levels(self):
+        names = lambda perm, allowed=(): [t["function"]["name"] for t in self.at.tool_specs(perm, list(allowed))]
+        self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir"])
+        self.assertIn("write_file", names("edit"))
+        self.assertNotIn("run_command", names("edit"))
+        self.assertIn("run_command", names("read", ["slop-chop"]))
+        self.assertIn("run_command", names("full"))
+
+    def test_tools_behave(self):
+        r = self.runner("read", ["echo"])
+        self.assertEqual(r.run("read_file", {"path": "notes.txt"}), "line1\nline2")
+        self.assertIn("off limits", r.run("read_file", {"path": "../data/secrets.json"}))
+        self.assertIn("not allow", r.run("write_file", {"path": "x", "content": "y"}))
+        self.assertIn("only these programs", r.run("run_command", {"command": "ls"}))
+        self.assertIn("no shell operators", r.run("run_command", {"command": "echo hi | cat"}))
+        self.assertEqual(r.run("run_command", {"command": "echo hi"}), "exit 0\nhi\n")
+        full = self.runner("full")
+        self.assertEqual(full.run("run_command", {"command": "echo a | tr a b"}), "exit 0\nb\n")
+        self.assertIn("wrote", self.runner("edit").run("write_file", {"path": "out.txt", "content": "z"}))
+
+    def test_loop_runs_tool_then_answers(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "permissions": "read",
+                    "allowed_commands": ["echo"], "cwd": str(self.tmp / "work")})
+        store.add("alice", "@qwen run echo")
+        seen = []
+
+        def fake(spec, system, msgs, tools=None):
+            seen.append(msgs[-1])
+            if len(seen) == 1:
+                self.assertIn("slop-chop", system) if "slop-chop" in self.at.skills() else None
+                return {"content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {
+                    "name": "run_command", "arguments": json.dumps({"command": "echo tool-ran"})}}]}
+            return {"content": "done: " + msgs[-1]["content"].split("\n")[1]}
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = fake
+        try:
+            self.assertEqual(agent_runner.Runner(mgr, "qwen")._api_turn("general"), "done: tool-ran")
+        finally:
+            agent_runner.call_api_message = orig
+        self.assertEqual(seen[1]["role"], "tool")
+
+    def test_claude_allowed_commands_become_bash_rules(self):
+        cmd = agent_runner.cli_command({"kind": "claude", "permissions": "read", "allowed_commands": ["slop-chop"]},
+                                       "hi", None, "S")
+        self.assertIn("Bash(slop-chop:*)", cmd)

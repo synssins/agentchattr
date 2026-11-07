@@ -94,7 +94,7 @@
                     el('div', { class: 'agents-name', text: `@${a.name}` }),
                     el('div', { class: 'agents-sub', text: (a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}`)
                         + ' · #general' + (a.channels || []).map(c => ' #' + c).join('') })),
-                a.kind === 'api' ? el('span') : permSelect(a),
+                permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
                 el('button', { class: 'agents-btn', text: 'New context', title: 'Forget sessions and conversation; keep the persona',
@@ -202,6 +202,9 @@
         const perm = el('select');
         for (const [v, t] of Object.entries(PERMS)) perm.append(el('option', { value: v, text: t }));
         perm.value = a.permissions || 'read';
+        const allowedCmds = el('input', { value: (a.allowed_commands || []).join(', '),
+            placeholder: 'e.g. slop-chop, git (blank: none)' });
+        const timeout = el('input', { type: 'number', min: '10', max: '7200', value: a.timeout || '', placeholder: '600' });
         const permWarn = el('small', { class: 'agents-warn',
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
@@ -209,11 +212,14 @@
             field('Provider', provider), field('Base URL', baseUrl), field('API format', apiFormat),
             field('API key', apiKey, 'Stored on the server only, never shown again.'),
             el('div', { class: 'agents-inline' }, field('Model', model), fetchBtn), models,
-            el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx)));
-        const cliBox = el('div', { class: 'agents-group' },
-            field('Working directory', cwd, 'Where the agent reads and edits files.'),
-            field('Model', cliModel),
-            field('Permissions', perm, 'Switch any time from the agent list; applies from the next turn.'), permWarn);
+            el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx),
+                field('Timeout (seconds)', timeout)));
+        const cliBox = el('div', { class: 'agents-group' }, field('Model', cliModel));
+        const toolsBox = el('div', { class: 'agents-group' },
+            field('Working directory', cwd, 'Where the agent reads, edits and runs things.'),
+            field('Permissions', perm, 'Switch any time from the agent list; applies from the next turn.'), permWarn,
+            field('Allowed commands', allowedCmds,
+                'Programs this agent may run even below Full access (comma-separated). Needed for skills that wrap a CLI, like slop-chop. Not supported for Antigravity.'));
         const sync = () => {
             apiBox.hidden = kind.value !== 'api';
             cliBox.hidden = kind.value === 'api';
@@ -227,7 +233,7 @@
             el('h2', { text: editing ? `Edit @${a.name}` : (a.duplicateOf ? `New instance of @${a.duplicateOf}` : 'Add agent') }),
             el('div', { class: 'agents-inline' }, field('Name (@mention)', name), field('Label', label), field('Color', color)),
             field('Type', kind),
-            apiBox, cliBox,
+            apiBox, cliBox, toolsBox,
             field('Role / instructions (from you)', prompt),
             field('Persona (the agent\'s own identity; it can rewrite this itself)', persona,
                 'Kept across restarts and New context. Duplicates and spawns start without one.'),
@@ -240,21 +246,23 @@
                 el('button', { type: 'submit', class: 'agents-btn primary', text: editing ? 'Save' : 'Add and start' })));
         f.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (kind.value !== 'api' && perm.value === 'full' && a.permissions !== 'full' &&
+            if (perm.value === 'full' && a.permissions !== 'full' &&
                 !confirm('Full access lets this agent run any command on this machine without asking. Continue?')) return;
             const spec = {
                 name: name.value.trim(), label: label.value.trim(), color: color.value, kind: kind.value,
                 system_prompt: prompt.value.trim(), persona: persona.value.trim(), enabled: a.enabled !== false,
                 channels: chanBoxes.filter(x => x.cb.checked).map(x => x.c),
+                cwd: cwd.value.trim(), permissions: perm.value,
+                allowed_commands: allowedCmds.value.split(',').map(x => x.trim()).filter(Boolean),
             };
             if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {
                 Object.assign(spec, { base_url: baseUrl.value.trim(), api_format: apiFormat.value,
                     api_key: apiKey.value, model: model.value.trim(),
                     temperature: temp.value === '' ? null : Number(temp.value),
-                    context_messages: Number(ctx.value) || 30 });
+                    context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null });
             } else {
-                Object.assign(spec, { cwd: cwd.value.trim(), model: cliModel.value.trim(), permissions: perm.value });
+                Object.assign(spec, { model: cliModel.value.trim() });
             }
             await save(spec);
         });

@@ -38,6 +38,7 @@ KINDS = ("api", "claude", "agy")
 PERMISSIONS = ("read", "edit", "full")
 NO_REPLY = "(no reply)"
 CLI_TIMEOUT = 30 * 60
+API_TIMEOUT = 600          # local reasoning models can think for minutes; per-agent "timeout" overrides
 
 PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
@@ -72,6 +73,7 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
         return json.loads(resp.read())
 
 
+MAX_TOOL_STEPS = 12        # tool calls per turn for API agents
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -91,8 +93,20 @@ def _to_anthropic(content):
     return out
 
 
+def _timeout(spec: dict) -> int:
+    try:
+        return max(10, int(spec.get("timeout") or API_TIMEOUT))
+    except (TypeError, ValueError):
+        return API_TIMEOUT
+
+
 def call_api(spec: dict, system: str, messages: list[dict]) -> str:
-    """One chat call. messages: [{"role": "user"|"assistant", "content": str | parts}]."""
+    return call_api_message(spec, system, messages).get("content") or ""
+
+
+def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None) -> dict:
+    """One chat call -> the assistant message ({"content", "tool_calls"?}).
+    Tools are passed for OpenAI-compatible providers only."""
     base = spec.get("base_url", "").rstrip("/")
     key = spec.get("api_key", "")
     if spec.get("api_format") == "anthropic":
@@ -102,15 +116,17 @@ def call_api(spec: dict, system: str, messages: list[dict]) -> str:
         if spec.get("temperature") is not None:
             payload["temperature"] = float(spec["temperature"])
         data = _post_json(f"{base}/messages", payload,
-                          {"x-api-key": key, "anthropic-version": "2023-06-01"})
-        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+                          {"x-api-key": key, "anthropic-version": "2023-06-01"}, timeout=_timeout(spec))
+        return {"content": "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")}
     payload = {"model": spec.get("model", ""),
                "messages": [{"role": "system", "content": system}] + messages}
+    if tools:
+        payload["tools"] = tools
     if spec.get("temperature") is not None:
         payload["temperature"] = float(spec["temperature"])
     data = _post_json(f"{base}/chat/completions", payload,
-                      {"Authorization": f"Bearer {key}"} if key else {})
-    return data["choices"][0]["message"].get("content") or ""
+                      {"Authorization": f"Bearer {key}"} if key else {}, timeout=_timeout(spec))
+    return data["choices"][0]["message"]
 
 
 def list_models(base_url: str, api_key: str, api_format: str) -> list[str]:
@@ -133,13 +149,14 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str,
             cmd += ["--disallowedTools", f"Read({protect}/**)", f"Edit({protect}/**)", f"Write({protect}/**)"]
         if session:
             cmd += ["--resume", session]
+        extra = [f"Bash({c}:*)" for c in spec.get("allowed_commands") or []]  # e.g. Bash(slop-chop:*)
         if perm == "full":
             cmd += ["--dangerously-skip-permissions"]
         elif perm == "edit":
-            cmd += ["--permission-mode", "acceptEdits"]
+            cmd += ["--permission-mode", "acceptEdits"] + (["--allowedTools", *extra] if extra else [])
         else:
             # -p mode denies anything not allowed; no prompt can appear
-            cmd += ["--allowedTools", "Read", "Grep", "Glob", "LS"]
+            cmd += ["--allowedTools", "Read", "Grep", "Glob", "LS", *extra]
     else:  # agy: no system-prompt flag, so the room prompt rides in the first turn
         if session and spec.get("persona"):  # persona can change mid-session: restate it
             prompt = f"(Your current persona: {spec['persona']})\n\n{prompt}"
@@ -260,7 +277,17 @@ class Runner:
             granted = admin_api.secret_names_for(self.name)
         except Exception:
             granted = []
-        if granted and self.spec.get("kind") != "api":
+        if self.spec.get("kind") == "api" and self.spec.get("api_format") != "anthropic":
+            import agent_tools
+            sk = agent_tools.skills()
+            perm = self.spec.get("permissions", "read")
+            allowed = self.spec.get("allowed_commands") or []
+            parts.append(
+                f"You can use tools (permission level: {perm}"
+                + (f"; allowed programs: {', '.join(allowed)}" if allowed and perm != "full" else "")
+                + f"; working directory: {self.spec.get('cwd') or '~'}). Installed skills (call load_skill "
+                "before using one):\n" + "\n".join(f"- {n}: {v['description']}" for n, v in sorted(sk.items())))
+        if granted:
             parts.append("Credentials granted to you by the owner, available as environment variables: "
                          + ", ".join(granted) + ". Other agents do not have them; never print their values.")
         persona = self.spec.get("persona")
@@ -328,8 +355,11 @@ class Runner:
                 hub.store.add("system", note, msg_type="system", channel=channel)
         except Exception as exc:
             log.exception("turn failed for %s", self.name)
-            hub.store.add("system", f"{self.name} failed: {str(exc)[:200]}", msg_type="system",
-                          channel=channel)
+            why = str(exc)[:200]
+            if isinstance(exc, TimeoutError) or "timed out" in why:
+                why = (f"no answer within {_timeout(self.spec)} s (the model may still have been "
+                       "generating; raise Timeout in Settings > Agents)")
+            hub.store.add("system", f"{self.name} failed: {why}", msg_type="system", channel=channel)
         finally:
             self.working = False
 
@@ -368,13 +398,50 @@ class Runner:
                 msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
             return msgs
 
+        msgs = build(with_images=bool(inline))
         try:
-            return call_api(self.spec, self._system(channel), build(with_images=bool(inline)))
+            return self._tool_loop(channel, msgs, images_inline=bool(inline))
         except urllib.error.HTTPError as exc:
             if not inline or exc.code not in (400, 415, 422):
                 raise
             log.info("%s: model rejected images (%s); retrying text-only", self.name, exc.code)
-            return call_api(self.spec, self._system(channel), build(with_images=False))
+            return self._tool_loop(channel, build(with_images=False))
+
+    def _tool_loop(self, channel: str, msgs: list[dict], images_inline: bool = False) -> str:
+        """Let an API agent call tools (agent_tools) until it answers in text."""
+        import admin_api
+        import agent_tools
+        spec, system = self.spec, self._system(channel)
+        perm, allowed = spec.get("permissions", "read"), spec.get("allowed_commands") or []
+        tools = agent_tools.tool_specs(perm, allowed) if spec.get("api_format") != "anthropic" else None
+        env = dict(os.environ)
+        env.update(admin_api.secrets_for(self.name))
+        runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
+                                        protect=str(Path(self.m.data_dir).resolve()))
+        for _ in range(MAX_TOOL_STEPS):
+            try:
+                reply = call_api_message(spec, system, msgs, tools)
+            except urllib.error.HTTPError as exc:
+                # A 400 with inline images: let the caller retry without images first
+                if images_inline or not tools or exc.code not in (400, 422):
+                    raise
+                log.info("%s: provider rejected tools (%s); answering without them", self.name, exc.code)
+                tools = None
+                continue
+            calls = reply.get("tool_calls") or []
+            if not calls or self.stop.is_set():
+                return reply.get("content") or ""
+            msgs.append({"role": "assistant", "content": reply.get("content") or "", "tool_calls": calls})
+            for c in calls:
+                fn = c.get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                log.info("%s tool %s %s", self.name, fn.get("name"), str(args)[:120])
+                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""),
+                             "content": runner.run(fn.get("name", ""), args if isinstance(args, dict) else {})})
+        return "(stopped after too many tool steps)"
 
     def _cli_turn(self, channel: str) -> str:
         spec = self.spec
@@ -503,6 +570,9 @@ class AgentManager:
             return "name: 1-32 chars, lowercase letters, digits, - or _"
         if spec.get("kind") not in KINDS:
             return f"kind must be one of {KINDS}"
+        if not isinstance(spec.get("allowed_commands", []), list) or not all(
+                re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", str(c)) for c in spec.get("allowed_commands", [])):
+            return "allowed commands: program names only (letters, digits, . _ + -)"
         if not isinstance(spec.get("channels", []), list):
             return "channels must be a list of channel names"
         if spec.get("permissions", "read") not in PERMISSIONS:
