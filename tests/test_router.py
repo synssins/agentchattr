@@ -41,3 +41,13 @@ class RouterMentionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultAllOnlineOnly(unittest.TestCase):
+    def test_plain_human_message_reaches_online_agents_only(self):
+        from router import Router
+        r = Router(["claude", "codex", "qwen3"], default_mention="all",
+                   online_checker=lambda: {"claude", "qwen3"})
+        self.assertEqual(sorted(r.get_targets("alice", "Hey guys. Sound off.")), ["claude", "qwen3"])
+        self.assertEqual(r.get_targets("alice", "@codex hi"), ["codex"])
+        self.assertEqual(r.get_targets("claude", "plain agent broadcast"), [])  # agents still need @mentions

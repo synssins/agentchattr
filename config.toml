@@ -114,8 +114,9 @@ settle_seconds = 8
 round_cap_seconds = 300
 
 [routing]
-# "none" = only route on explicit @mention. "all" = route to all agents by default.
-default = "none"
+# "none" = only route on explicit @mention. "all" = a human message without an
+# @mention goes to every online agent (an @mention still targets just that agent).
+default = "all"
 max_agent_hops = 4
 
 [mcp]

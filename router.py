@@ -61,6 +61,10 @@ class Router:
             ch["guard_emitted"] = False
             if not mentions:
                 if self.default_mention in ("both", "all"):
+                    # Like @all: only agents that are online, not every configured base
+                    if self._online_checker:
+                        online = self._online_checker()
+                        return [n for n in self.agent_names if n in online]
                     return list(self.agent_names)
                 elif self.default_mention == "none":
                     return []
