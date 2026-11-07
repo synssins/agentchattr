@@ -92,10 +92,13 @@
                 el('span', { class: 'agents-swatch', style: `background:${a.color || '#8b5cf6'}` }),
                 el('div', { class: 'agents-info' },
                     el('div', { class: 'agents-name', text: `@${a.name}` }),
-                    el('div', { class: 'agents-sub', text: a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}` })),
+                    el('div', { class: 'agents-sub', text: (a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}`)
+                        + ' · ' + (a.channels && a.channels.length ? a.channels.map(c => '#' + c).join(' ') : 'all channels') })),
                 a.kind === 'api' ? el('span') : permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
+                el('button', { class: 'agents-btn', text: 'Duplicate', title: 'New instance with the same settings',
+                    onclick: () => renderForm({ ...a, name: '', label: '', duplicateOf: a.name }) }),
                 el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
                     if (!confirm(`Delete ${a.name}? Its settings and session memory are removed; chat history stays.`)) return;
                     agents = await api('DELETE', `/api/managed-agents/${encodeURIComponent(a.name)}`);
@@ -133,6 +136,12 @@
         const d = dialog();
         d.textContent = '';
         const editing = !!a.name;
+        const allChannels = (typeof channelList !== 'undefined' && channelList.length) ? channelList : ['general'];
+        const chosen = new Set(a.channels || []);
+        const chanBoxes = allChannels.map(c => {
+            const cb = el('input', { type: 'checkbox', value: c, checked: chosen.has(c) });
+            return { c, cb, label: el('label', { class: 'agents-toggle' }, cb, el('span', { text: '#' + c })) };
+        });
         const f = el('form', { class: 'agents-form' });
         const name = el('input', { required: true, pattern: '[a-z0-9][a-z0-9_-]{0,31}', value: a.name || '',
             placeholder: 'e.g. claude, agy, qwen', readonly: editing });
@@ -158,7 +167,7 @@
             apiFormat.value = p.api_format;
         });
         const apiKey = el('input', { type: 'password', autocomplete: 'off',
-            placeholder: a.has_api_key ? 'Stored. Leave blank to keep it.' : 'API key (blank for local servers)' });
+            placeholder: a.has_api_key ? (a.duplicateOf ? `Blank = use @${a.duplicateOf}'s key` : 'Stored. Leave blank to keep it.') : 'API key (blank for local servers)' });
         const model = el('input', { list: 'agents-models', value: a.model || '', placeholder: 'Model id' });
         const models = el('datalist', { id: 'agents-models' });
         const fetchBtn = el('button', { type: 'button', class: 'agents-btn', text: 'Fetch models' });
@@ -207,11 +216,15 @@
         sync();
 
         f.append(
-            el('h2', { text: editing ? `Edit @${a.name}` : 'Add agent' }),
+            el('h2', { text: editing ? `Edit @${a.name}` : (a.duplicateOf ? `New instance of @${a.duplicateOf}` : 'Add agent') }),
             el('div', { class: 'agents-inline' }, field('Name (@mention)', name), field('Label', label), field('Color', color)),
             field('Type', kind),
             apiBox, cliBox,
             field('Role / instructions', prompt),
+            el('div', { class: 'agents-field' },
+                el('span', { text: 'Channels (none ticked = all channels)' }),
+                el('div', { class: 'agents-inline' }, ...chanBoxes.map(x => x.label)),
+                el('small', { text: 'The agent is only woken in these channels and only listed there. Coding agents keep a separate session per channel.' })),
             el('div', { class: 'agents-actions' },
                 el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: renderList }),
                 el('button', { type: 'submit', class: 'agents-btn primary', text: editing ? 'Save' : 'Add and start' })));
@@ -222,7 +235,9 @@
             const spec = {
                 name: name.value.trim(), label: label.value.trim(), color: color.value, kind: kind.value,
                 system_prompt: prompt.value.trim(), enabled: a.enabled !== false,
+                channels: chanBoxes.filter(x => x.cb.checked).map(x => x.c),
             };
+            if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {
                 Object.assign(spec, { base_url: baseUrl.value.trim(), api_format: apiFormat.value,
                     api_key: apiKey.value, model: model.value.trim(),

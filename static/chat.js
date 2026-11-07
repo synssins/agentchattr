@@ -1863,6 +1863,8 @@ function renderMembers() {
     const rows = [{ name: username, label: username, color: 'var(--user-color)', state: 'online', role: 'you' }];
     for (const [name, cfg] of Object.entries(agentConfig)) {
         const st = _memberStatus[name] || {};
+        // Agents limited to some channels only show in those channels
+        if (Array.isArray(st.channels) && st.channels.length && !st.channels.includes(activeChannel)) continue;
         const state = st.available ? (st.busy ? 'working' : 'online') : 'offline';
         rows.push({ name, label: cfg.label || name, color: colorOverrides[name] || cfg.color || '#888',
                     state, role: _agentRoles[name] || '' });

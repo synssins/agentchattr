@@ -314,6 +314,15 @@ class AgentManager:
         with self.lock:
             self._write(self.state_path, self.state)
 
+    def in_channel(self, name: str, channel: str) -> bool:
+        """Managed agents can be limited to some channels (empty list = all).
+        Agents not managed here (wrappers, self-registered) are in every channel."""
+        chans = self.specs.get(name, {}).get("channels") or []
+        return not chans or channel in chans
+
+    def channels_of(self, name: str) -> list[str] | None:
+        return self.specs.get(name, {}).get("channels") or None
+
     @staticmethod
     def public(spec: dict) -> dict:
         out = {k: v for k, v in spec.items() if k != "api_key"}
@@ -329,6 +338,8 @@ class AgentManager:
             return "name: 1-32 chars, lowercase letters, digits, - or _"
         if spec.get("kind") not in KINDS:
             return f"kind must be one of {KINDS}"
+        if not isinstance(spec.get("channels", []), list):
+            return "channels must be a list (empty = all channels)"
         if spec.get("permissions", "read") not in PERMISSIONS:
             return f"permissions must be one of {PERMISSIONS}"
         live = self.hub.registry.get_instance(spec["name"]) if self.hub.registry else None
@@ -341,8 +352,9 @@ class AgentManager:
         return None
 
     def upsert(self, spec: dict) -> str | None:
-        spec = {k: v for k, v in spec.items() if k not in ("running", "has_api_key")}
-        old = self.specs.get(spec.get("name", ""), {})
+        src = spec.pop("copy_key_from", None)
+        spec = {k: v for k, v in spec.items() if k not in ("running", "has_api_key", "duplicateOf")}
+        old = self.specs.get(spec.get("name", "")) or self.specs.get(src or "", {})
         if not spec.get("api_key") and old.get("api_key"):
             spec["api_key"] = old["api_key"]  # blank in the form = keep the stored key
         spec.setdefault("permissions", "read")

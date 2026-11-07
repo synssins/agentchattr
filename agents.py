@@ -17,6 +17,8 @@ class AgentTrigger:
 
     def get_status(self) -> dict:
         from mcp_bridge import is_online, is_active, get_role
+        import app
+        mgr = getattr(app, "agent_manager", None)
         instances = self._registry.get_all()
         return {
             name: {
@@ -25,6 +27,7 @@ class AgentTrigger:
                 "label": info["label"],
                 "color": info["color"],
                 "role": get_role(name),
+                "channels": mgr.channels_of(name) if mgr else None,  # None = every channel
             }
             for name, info in instances.items()
         }

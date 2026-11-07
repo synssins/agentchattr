@@ -117,3 +117,20 @@ class AddressedTest(unittest.TestCase):
         self.assertFalse(r._addressed("general"))  # may stay quiet if not its work
         store.add("alice", "@qwen3 not you")
         self.assertFalse(r._addressed("general"))
+
+
+class ChannelMembershipTest(unittest.TestCase):
+    def test_in_channel_and_duplicate_key(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        base = {"kind": "api", "base_url": "http://x/v1", "enabled": False}
+        self.assertIsNone(mgr.upsert(dict(base, name="a", api_key="k1")))
+        self.assertIsNone(mgr.upsert(dict(base, name="b", channels=["irc-work"], copy_key_from="a")))
+        self.assertTrue(mgr.in_channel("a", "general"))           # no channels = all
+        self.assertTrue(mgr.in_channel("b", "irc-work"))
+        self.assertFalse(mgr.in_channel("b", "general"))
+        self.assertTrue(mgr.in_channel("remote-x", "general"))    # unmanaged agents: everywhere
+        self.assertEqual(mgr.specs["b"]["api_key"], "k1")          # duplicate reused the stored key
+        self.assertNotIn("copy_key_from", mgr.specs["b"])

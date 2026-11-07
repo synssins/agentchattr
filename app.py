@@ -930,6 +930,12 @@ async def _handle_new_message(msg: dict):
 
     import mcp_bridge
     for target in targets:
+        # Channel membership (Settings > Agents > Channels): not woken outside its channels
+        if agent_manager and not agent_manager.in_channel(target, channel):
+            if _re.search(rf"@{_re.escape(target)}(?![\w-])", text, _re.I):
+                store.add("system", f"{target} isn't in #{channel} (see Settings > Agents).",
+                          msg_type="system", channel=channel)
+            continue
         # Skip pending instances — they haven't been named/claimed yet
         if registry:
             inst = registry.get_instance(target)

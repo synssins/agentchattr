@@ -244,11 +244,12 @@ class Gateway:
     def channels(self) -> list[str]:
         return list(self.hub.room_settings.get("channels", ["general"]))
 
-    def online_agents(self) -> list[str]:
-        return [n for n, s in self.status.items() if s.get("available")]
+    def online_agents(self, ch: str | None = None) -> list[str]:
+        return [n for n, s in self.status.items() if s.get("available")
+                and (ch is None or not s.get("channels") or ch in s["channels"])]
 
     def members(self, ch: str) -> list[str]:
-        return [irc_nick(self.username())] + [irc_nick(n) for n in self.online_agents()]
+        return [irc_nick(self.username())] + [irc_nick(n) for n in self.online_agents(ch)]
 
     def continue_routing(self):
         self.hub.router.continue_routing()
@@ -265,7 +266,7 @@ class Gateway:
         c.send(f":{c.nick}!user@{SERVER} JOIN #{ch}")
         self.send_topic(c, ch)
         self.send_names(c, ch)
-        for name in self.online_agents():
+        for name in self.online_agents(ch):
             if self.status[name].get("busy") and "away-notify" in c.caps:
                 c.send(f":{irc_nick(name)}!agent@{SERVER} AWAY :working")
         for msg in self.hub.store.get_recent(self.backlog, channel=ch):
@@ -273,7 +274,7 @@ class Gateway:
 
     def send_topic(self, c: Client, ch: str):
         title = self.hub.room_settings.get("title") or "AgentHub"
-        c.numeric("332", f"#{ch}", f"{title} — agents: {', '.join(self.online_agents()) or 'none online'}")
+        c.numeric("332", f"#{ch}", f"{title} — agents: {', '.join(self.online_agents(ch)) or 'none online'}")
 
     def send_names(self, c: Client, ch: str):
         names = [("@" if i == 0 else "") + n for i, n in enumerate(self.members(ch))]
@@ -327,8 +328,8 @@ class Gateway:
     def update_status(self, new: dict[str, dict]):
         """Diff agent presence and tell IRC clients (JOIN/QUIT/AWAY/typing)."""
         old = self.status
-        self.status = {n: {"available": bool(s.get("available")), "busy": bool(s.get("busy"))}
-                       for n, s in new.items()}
+        self.status = {n: {"available": bool(s.get("available")), "busy": bool(s.get("busy")),
+                           "channels": s.get("channels")} for n, s in new.items()}
         for name in set(old) | set(self.status):
             was, now = old.get(name, {}), self.status.get(name, {})
             nick = irc_nick(name)
@@ -338,7 +339,8 @@ class Gateway:
                     continue
                 if now.get("available") and not was.get("available"):
                     for ch in c.joined:
-                        c.send(f"{src} JOIN #{ch}")
+                        if not now.get("channels") or ch in now["channels"]:
+                            c.send(f"{src} JOIN #{ch}")
                 elif was.get("available") and not now.get("available"):
                     c.send(f"{src} QUIT :offline")
                     continue
