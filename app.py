@@ -896,6 +896,11 @@ async def _handle_new_message(msg: dict):
             )
 
     raw_targets = router.get_targets(sender, text, channel)
+    # Team channels: an untagged message from a human goes to the channel's own
+    # agents (#general holds everyone, so there it still takes @all or @name).
+    if (not raw_targets and channel != "general" and agent_manager and msg_type == "chat"
+            and sender not in known_agents and sender != "system" and not router.parse_mentions(text)):
+        raw_targets = [n for n in registry.get_active_names() if agent_manager.in_channel(n, channel)]
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
