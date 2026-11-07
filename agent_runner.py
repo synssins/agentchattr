@@ -41,6 +41,9 @@ CLI_TIMEOUT = 30 * 60
 API_TIMEOUT = 600          # local reasoning models can think for minutes; per-agent "timeout" overrides
 
 PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
+RESUME_NOTE = ("(Your previous turn here was cut off by a server restart before you could post. "
+               "Check what you already did, such as files changed, commands run or commits, then "
+               "carry on from there instead of starting over.)")
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
@@ -208,6 +211,7 @@ class Runner:
         self.stop = threading.Event()
         self.working = False
         self.proc: subprocess.Popen | None = None  # in-flight CLI turn, killed on shutdown
+        self.resuming: set[str] = set()  # channels whose last turn a restart cut off
 
     @property
     def spec(self) -> dict:
@@ -243,8 +247,14 @@ class Runner:
         qf = Path(self.m.data_dir) / f"{self.name}_queue.jsonl"
         if qf.exists():
             qf.write_text("", "utf-8")  # don't replay triggers from before a restart
+        # ...but do finish turns a restart interrupted (recorded in the state file)
+        pending = list(self.m.state.get(self.name, {}).get("inflight", []))
+        for ch in pending:
+            self.resuming.add(ch)
+            self.m.hub.store.add("system", f"@{self.name}'s turn was cut off by a server restart; resuming it.",
+                                 msg_type="system", channel=ch)
         while not self.stop.is_set():
-            channels = []
+            channels, pending = pending, []
             try:
                 if qf.exists() and qf.stat().st_size > 0:
                     lines = qf.read_text("utf-8").splitlines()
@@ -350,6 +360,7 @@ class Runner:
     def _turn_locked(self, channel: str):
         hub = self.m.hub
         self.working = True
+        self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
             spec = self.spec
             if spec["kind"] == "api":
@@ -384,6 +395,9 @@ class Runner:
             hub.store.add("system", f"{self.name} failed: {why}", msg_type="system", channel=channel)
         finally:
             self.working = False
+            if not self.stop.is_set():  # a shutdown mid-turn keeps the mark so it resumes
+                self.m.set_inflight(self.name, channel, False)
+            self.resuming.discard(channel)
 
     def _api_turn(self, channel: str) -> str:
         n = int(self.spec.get("context_messages") or 30)
@@ -421,6 +435,8 @@ class Runner:
             return msgs
 
         msgs = build(with_images=bool(inline))
+        if channel in self.resuming:
+            msgs.append({"role": "user", "content": RESUME_NOTE})
         try:
             return self._tool_loop(channel, msgs, images_inline=bool(inline))
         except urllib.error.HTTPError as exc:
@@ -506,6 +522,8 @@ class Runner:
         hint = ("\n\n(Attached files are on disk at the paths shown; open them with your file-reading "
                 "tool to see them.)" if "[attached " in transcript else "")
         prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
+        if channel in self.resuming:
+            prompt = RESUME_NOTE + "\n\n" + prompt
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
         import admin_api
         import mcp_hub
@@ -576,6 +594,16 @@ class AgentManager:
         agent keeps its original family; reusing that name would renumber it)."""
         reg = self.hub.registry
         return bool(name in self.specs or reg.get_instance(name) or reg.get_instances_for(name))
+
+    def set_inflight(self, name: str, channel: str, on: bool):
+        with self.lock:
+            st = self.state.setdefault(name, {"sessions": {}, "cursors": {}})
+            chans = [c for c in st.get("inflight", []) if c != channel] + ([channel] if on else [])
+            if chans:
+                st["inflight"] = chans
+            else:
+                st.pop("inflight", None)
+        self.save_state()
 
     def channel_lock(self, channel: str) -> threading.Lock:
         with self.lock:

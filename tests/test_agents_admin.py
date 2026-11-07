@@ -535,3 +535,44 @@ class ToolBudgetTest(unittest.TestCase):
             agent_runner.call_api_message = orig
         self.assertEqual(len(calls), 3)          # 2 tool rounds, then one summary call
         self.assertIsNone(calls[-1])             # summary call has no tools
+
+
+class ResumeAfterRestartTest(unittest.TestCase):
+    def test_interrupted_turn_resumes_with_note(self):
+        import time as tm
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "lazlo", "kind": "api", "base_url": "http://x/v1"})
+        store.add("alice", "@lazlo big job", channel="sonorium")
+        mgr.set_inflight("lazlo", "sonorium", True)        # what a cut-off turn leaves behind
+
+        mgr2 = agent_runner.AgentManager(hub, tmp.name)     # "after the restart": state read from disk
+        self.assertEqual(mgr2.state["lazlo"]["inflight"], ["sonorium"])
+        seen = []
+
+        def fake(spec, system, msgs, tools=None):
+            seen.append(msgs[-1]["content"])
+            return {"content": "Picked it back up."}
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = fake
+        r = agent_runner.Runner(mgr2, "lazlo")
+        th = __import__("threading").Thread(target=r._loop, daemon=True)
+        try:
+            th.start()
+            for _ in range(50):
+                if any(m["sender"] == "lazlo" for m in store.get_recent(10, channel="sonorium")):
+                    break
+                tm.sleep(0.1)
+        finally:
+            r.stop.set()
+            agent_runner.call_api_message = orig
+        self.assertIn("cut off by a server restart", seen[0])
+        texts = [m["text"] for m in store.get_recent(10, channel="sonorium")]
+        self.assertIn("Picked it back up.", texts)
+        self.assertTrue(any("resuming it" in t for t in texts))
+        self.assertNotIn("inflight", mgr2.state["lazlo"])   # cleared once the turn finished
