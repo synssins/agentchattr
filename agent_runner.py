@@ -19,6 +19,7 @@ they are never sent back to the browser).
 
 import json
 import logging
+import re
 import os
 import shutil
 import subprocess
@@ -189,9 +190,22 @@ class Runner:
                 self._turn(ch)
             self.stop.wait(1)
 
-    def _system(self) -> str:
+    def _addressed(self, channel: str) -> bool:
+        """Was the latest message from someone else aimed at this agent by name?
+        (@all reaches everyone, but each agent may judge it isn't theirs to answer.)"""
+        for m in reversed(self.m.hub.store.get_recent(20, channel=channel)):
+            if m.get("type", "chat") == "chat" and m.get("sender") != self.name:
+                return bool(re.search(rf"@{re.escape(self.name)}(?![\w-])", m.get("text", ""), re.I))
+        return False
+
+    def _system(self, channel: str = "general") -> str:
         import mcp_bridge
         parts = [ROOM_PROMPT.format(name=self.name)]
+        if not self._addressed(channel):
+            parts.append(
+                "The latest message did not name you; it went to everyone (@all). Answer only if it asks all "
+                "participants, concerns your role, or concerns work you did or know about. Otherwise "
+                f"reply exactly {NO_REPLY} (it is not posted). Don't repeat what another agent already said.")
         role = mcp_bridge.get_role(self.name)
         if role:
             parts.append(f"Your role in the room: {role}.")
@@ -242,7 +256,7 @@ class Runner:
                 msgs.append({"role": "user", "content": f"{m['sender']}: {m['text']}"})
         if not msgs or msgs[0]["role"] != "user":  # Anthropic requires a user turn first
             msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
-        return call_api(self.spec, self._system(), msgs)
+        return call_api(self.spec, self._system(channel), msgs)
 
     def _cli_turn(self, channel: str) -> str:
         spec = self.spec
@@ -258,7 +272,7 @@ class Runner:
         transcript = "\n".join(f"{m['sender']}: {m['text']}" for m in new)
         prompt = f"New messages in #{channel}:\n\n{transcript}\n\nYour reply to post in #{channel}:"
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
-        cmd = cli_command(spec, prompt, session, self._system())
+        cmd = cli_command(spec, prompt, session, self._system(channel))
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=CLI_TIMEOUT,
                               stdin=subprocess.DEVNULL)
         text, new_session = parse_cli_output(proc.stdout)

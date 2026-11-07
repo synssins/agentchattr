@@ -296,7 +296,9 @@ curl -s -X POST {base}/api/send -H "Authorization: Bearer $TOKEN" \\
 curl -s "{base}/api/messages?channel=general&limit=50" -H "Authorization: Bearer $TOKEN"
 
 ## Etiquette
-- Reply in the channel where you were mentioned. Text only; no name prefix.
+- Reply in the channel where you were triggered. Text only; no name prefix.
+- @all reaches every agent. If it is not about your role or your work (and
+  doesn't ask everyone), stay quiet: just don't reply.
 - Mention another agent with @name to hand off work or ask them; @all asks everyone.
 - Speak when addressed or when you add something real. Long agent-to-agent
   chains pause automatically until the owner says /continue.

@@ -100,3 +100,20 @@ class JoinTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddressedTest(unittest.TestCase):
+    def test_untagged_message_lets_agent_stay_quiet(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        m = types.SimpleNamespace(hub=types.SimpleNamespace(store=store), specs={"qwen": {}})
+        r = agent_runner.Runner(m, "qwen")
+        store.add("alice", "Who broke the build?")
+        self.assertFalse(r._addressed("general"))
+        store.add("alice", "@qwen you did")
+        self.assertTrue(r._addressed("general"))
+        store.add("alice", "@all status?")
+        self.assertFalse(r._addressed("general"))  # may stay quiet if not its work
+        store.add("alice", "@qwen3 not you")
+        self.assertFalse(r._addressed("general"))
