@@ -78,8 +78,13 @@ def _which(cmd: str) -> str | None:
 def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> dict:
     req = urllib.request.Request(url, method="POST", data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        # The body says why (bad model id, missing field, context too long...): surface it
+        exc.msg = f"{exc.msg}: {exc.read()[:400].decode('utf-8', 'replace')}"
+        raise
 
 
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
@@ -506,9 +511,23 @@ class Runner:
                 tools = None
                 continue
             calls = reply.get("tool_calls") or []
+            text = reply.get("content") or ""
+            if not calls and tools and "<tool_call>" in text and not self.stop.is_set():
+                # Tool-call markup as plain text: the server didn't parse it (often a tool name
+                # we never declared, e.g. Claude Code's "read"/"grep"). Don't post it; correct it.
+                names = ", ".join(t["function"]["name"] for t in tools)
+                log.info("%s wrote tool calls as text; asking it to use its real tools", self.name)
+                msgs.append({"role": "assistant", "content": text})
+                msgs.append({"role": "user", "content": (
+                    "(That reply had tool-call markup as plain text, so nothing ran and it was not "
+                    f"posted. Your only tools are: {names}. Call them with those exact names, or "
+                    "answer in plain text. There is no separate grep or read tool.)")})
+                continue
             if not calls or self.stop.is_set():
-                return reply.get("content") or ""
-            msgs.append({"role": "assistant", "content": reply.get("content") or "", "tool_calls": calls})
+                return text
+            # keep reasoning_details: Gemini (via OpenRouter) needs its thought signatures back
+            msgs.append({k: v for k, v in reply.items() if k in ("content", "tool_calls", "reasoning_details")}
+                        | {"role": "assistant", "content": text, "tool_calls": calls})
             for c in calls:
                 fn = c.get("function", {})
                 try:

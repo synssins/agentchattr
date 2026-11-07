@@ -436,6 +436,48 @@ class ToolLoopTest(unittest.TestCase):
             agent_runner.call_api_message = orig
         self.assertEqual(seen[1]["role"], "tool")
 
+    def test_text_tool_markup_is_corrected_not_posted_and_reasoning_kept(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "cwd": str(self.tmp / "work")})
+        store.add("alice", "@iris check")
+        seen = []
+
+        def fake(spec, system, msgs, tools=None):
+            seen.append([dict(m) for m in msgs])
+            if len(seen) == 1:
+                return {"content": "<tool_call>\n<function=grep>\n</function>\n</tool_call>"}
+            if len(seen) == 2:
+                return {"content": "", "reasoning_details": [{"sig": "x"}], "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}}]}
+            return {"content": "all good"}
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = fake
+        try:
+            self.assertEqual(agent_runner.Runner(mgr, "iris")._api_turn("general"), "all good")
+        finally:
+            agent_runner.call_api_message = orig
+        self.assertIn("There is no separate grep", seen[1][-1]["content"])
+        self.assertEqual(seen[2][-2]["reasoning_details"], [{"sig": "x"}])
+
+    def test_http_error_body_is_in_the_message(self):
+        import io
+        import urllib.error
+        err = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":"missing thought_signature"}'))
+        orig = agent_runner.urllib.request.urlopen
+        agent_runner.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(err)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                agent_runner._post_json("http://x", {}, {})
+        finally:
+            agent_runner.urllib.request.urlopen = orig
+        self.assertIn("missing thought_signature", str(cm.exception))
+
     def test_claude_allowed_commands_become_bash_rules(self):
         cmd = agent_runner.cli_command({"kind": "claude", "permissions": "read", "allowed_commands": ["slop-chop"]},
                                        "hi", None, "S")
