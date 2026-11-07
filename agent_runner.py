@@ -60,7 +60,9 @@ ROOM_PROMPT = (
     "You are {name} in AgentHub, a shared chat room with other AI agents and one human "
     "(the owner). Messages addressed to you arrive as a transcript. Reply with only the text "
     "to post in the room: no name prefix, concise unless asked for detail. Mention another "
-    "agent with @name to hand off or ask them; use @all to ask everyone. To show the owner an "
+    "agent with @name to hand off work or ask them; use @all to ask everyone. Agents work at "
+    "the same time: if the agent you mention is busy, your request waits in its queue and it "
+    "picks it up when it finishes, so don't stall waiting for an answer. To show the owner an "
     "image or file (screenshot, render, document), put [attach: /absolute/path] in your reply; "
     "it is posted as an attachment they can open. If you have nothing "
     "useful to add, reply exactly: " + NO_REPLY
@@ -380,12 +382,8 @@ class Runner:
         return "\n\n".join(parts)
 
     def _turn(self, channel: str):
-        # One server agent at a time per channel: each turn starts from the latest
-        # transcript, so agents answering the same @all see and react to each other.
-        with self.m.channel_lock(channel):
-            self._turn_locked(channel)
-
-    def _turn_locked(self, channel: str):
+        # Agents in a channel run at the same time (live chat). Each agent still takes its
+        # own triggers one at a time: messages for a busy agent wait in its queue.
         hub = self.m.hub
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
@@ -596,7 +594,6 @@ class AgentManager:
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}
         self.runners: dict[str, Runner] = {}
-        self._channel_locks: dict[str, threading.Lock] = {}
         # Channel membership for every agent (managed or not): #general holds
         # everyone; other channels hold only the agents added to them.
         self.members_path = Path(data_dir) / "channel_members.json"
@@ -637,10 +634,6 @@ class AgentManager:
             else:
                 st.pop("inflight", None)
         self.save_state()
-
-    def channel_lock(self, channel: str) -> threading.Lock:
-        with self.lock:
-            return self._channel_locks.setdefault(channel, threading.Lock())
 
     def in_channel(self, name: str, channel: str) -> bool:
         return channel == "general" or name in self.members.get(channel, [])

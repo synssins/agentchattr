@@ -204,7 +204,7 @@ class PersonaTest(unittest.TestCase):
 
 
 class TurnTakingTest(unittest.TestCase):
-    def test_turns_in_a_channel_are_sequential_and_see_each_other(self):
+    def test_agents_in_a_channel_answer_in_parallel(self):
         import threading as th
         import time as tm
         tmp = tempfile.TemporaryDirectory()
@@ -214,24 +214,26 @@ class TurnTakingTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        for n in ("a", "b"):
+        for n in ("slow", "fast"):
             mgr.upsert({"name": n, "kind": "api", "base_url": "http://x/v1"})
-        seen = {}
+        done = {}
 
-        def make(name):
+        def make(name, delay):
             r = agent_runner.Runner(mgr, name)
             def api_turn(ch):
-                seen[name] = [m["text"] for m in store.get_recent(10, channel=ch)]
-                tm.sleep(0.2)
+                tm.sleep(delay)
+                done[name] = tm.monotonic()
                 return f"I am {name}"
             r._api_turn = api_turn
             return r
-        store.add("alice", "@all names please")
-        threads = [th.Thread(target=make(n)._turn, args=("general",)) for n in ("a", "b")]
+        store.add("alice", "@all go")
+        threads = [th.Thread(target=make("slow", 0.6)._turn, args=("general",)),
+                   th.Thread(target=make("fast", 0.05)._turn, args=("general",))]
         [t.start() for t in threads]
         [t.join() for t in threads]
-        first, second = sorted(seen, key=lambda n: len(seen[n]))
-        self.assertIn(f"I am {first}", seen[second])  # the second saw the first's reply
+        self.assertLess(done["fast"], done["slow"])  # the fast agent didn't wait for the slow one
+        posted = [m["sender"] for m in store.get_recent(5) if m["type"] == "chat" and m["sender"] != "alice"]
+        self.assertEqual(posted, ["fast", "slow"])
 
 
 class RenameTest(unittest.TestCase):
