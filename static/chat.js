@@ -1970,7 +1970,7 @@ function openAddAgentPicker(anchor) {
         .filter(n => !((_memberStatus[n] || {}).channels || []).includes(activeChannel))
         .map(n => [`@${n}`, () => setChannelMember(n, true)]));
     section('New instance here (fresh context)', names
-        .filter(n => (_memberStatus[n] || {}).managed)
+        .filter(n => (_memberStatus[n] || {}).managed && !(_memberStatus[n] || {}).spawned)  // base agents only, not other channels' instances
         .map(n => [`+ @${n}`, () => ws.send(JSON.stringify({ type: 'message', text: `/spawn ${n}`, sender: username, channel: activeChannel }))]));
     section('Other', [['Create a new agent…', () => window.openSettings('agents')]]);
     anchor.after(pick);

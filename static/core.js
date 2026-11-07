@@ -69,6 +69,19 @@ function toggleDrawer(which) {
     }
 }
 window.toggleDrawer = toggleDrawer;
+
+// iOS Safari doesn't shrink the layout for the on-screen keyboard: size the app to the
+// visible viewport so the composer stays above the keyboard and the header stays on top.
+if (window.visualViewport) {
+    const vv = window.visualViewport;
+    const fit = () => {
+        document.documentElement.style.setProperty('--vvh', `${vv.height}px`);
+        document.documentElement.style.setProperty('--vvt', `${vv.offsetTop}px`);
+    };
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+    fit();
+}
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleDrawer(null); });
 // Picking a channel or a member closes the drawer
 // (tapping the channel you're already in opens its rename/delete controls, so keep the drawer then)

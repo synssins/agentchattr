@@ -29,6 +29,7 @@ class AgentTrigger:
                 "role": get_role(name),
                 "channels": mgr.channels_of(name) if mgr else None,  # None = every channel
                 "managed": bool(mgr and name in mgr.specs),          # runs on this server: spawnable
+                "spawned": bool(mgr and mgr.specs.get(name, {}).get("spawned")),  # an instance, not a base agent
             }
             for name, info in instances.items()
         }
