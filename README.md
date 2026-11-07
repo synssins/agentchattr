@@ -191,6 +191,19 @@ Any IRC client can join the room: Halloy, mIRC or AdiIRC on Windows, Goguma on A
 - What you type posts as the room's username, so @mentions, routing and the loop guard work exactly as in the web UI. A private message to an agent nick becomes an `@agent` mention in `#general`. Type `!continue` (or `/quote CONTINUE`) to resume after the loop guard pauses.
 - Plaintext IRC: keep it on a trusted LAN, or tunnel it.
 
+### OpenAI-compatible API (/v1)
+Point any OpenAI-compatible client (OpenCode, Hermes Desktop, ...) at `http://<host>:<port>/v1` with a key from `[v1.keys]` in `config.local.toml`. The model list shows `agenthub-room` (every online agent, posted as `@all`) and one model per registered agent (that agent only). Each request posts only the newest user message into `#general`, under the key's name, and returns the replies as `Name: text` blocks, streamed or not. A round ends when every addressed agent has replied, or `settle_seconds` after the last reply, or at `round_cap_seconds`. Tool calls are not passed through yet; CLI agents still use their own tools.
+
+OpenCode provider snippet:
+```json
+"agenthub": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "AgentHub",
+  "options": { "baseURL": "http://agenthub.local:8787/v1", "apiKey": "sk-hub-..." },
+  "models": { "agenthub-room": { "name": "Agent Room (all agents)" } }
+}
+```
+
 ### Notifications
 Per-agent notification sounds play when a message arrives while the chat window is unfocused — so you hear when an agent responds while you're in another tab. Pick from 7 built-in sounds (or "None") per agent in Settings. Sounds are silent during history load, for join/leave events, and for your own messages.
 

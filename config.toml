@@ -103,6 +103,16 @@ port = 6667
 password = ""
 backlog = 50
 
+[v1]
+# OpenAI-compatible API at /v1: model "agenthub-room" = every online agent,
+# an agent's name = that agent only. Keys go in config.local.toml:
+#   [v1.keys]
+#   opencode = "sk-hub-..."
+model_id = "agenthub-room"
+channel = "general"
+settle_seconds = 8
+round_cap_seconds = 300
+
 [routing]
 # "none" = only route on explicit @mention. "all" = route to all agents by default.
 default = "none"

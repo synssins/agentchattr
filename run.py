@@ -61,6 +61,11 @@ def main():
     from app import app, configure, set_event_loop, store as _store_ref
     configure(config, session_token=session_token)
 
+    # OpenAI-compatible /v1 surface (room + agents as models)
+    import v1_api
+    v1_api.setup(sys.modules["app"], config)
+    app.include_router(v1_api.router)
+
     # Share stores with the MCP bridge
     from app import store, rules, summaries, jobs, room_settings, registry, router as app_router, agents as app_agents, session_engine, session_store
     import mcp_bridge

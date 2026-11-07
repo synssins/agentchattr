@@ -251,6 +251,12 @@ def _install_security_middleware(token: str, cfg: dict):
             if path == "/" or path.startswith(("/static/", "/api/roles")) or public_image:
                 return await call_next(request)
 
+            # OpenAI-compatible surface: authenticated per request by its own
+            # Bearer keys ([v1.keys]); no browser session, no cookies, so the
+            # session-token and origin checks don't apply.
+            if path.startswith("/v1/"):
+                return await call_next(request)
+
             # Agent registration/heartbeat: loopback only (no remote agent minting).
             if path.startswith(("/api/register", "/api/deregister/", "/api/heartbeat/")):
                 client_ip = request.client.host if request.client else ""
