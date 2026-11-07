@@ -60,3 +60,11 @@
 # port = 6667
 # password = "change-me"    # IRC client "server password"; required off-loopback
 # backlog = 50              # messages replayed per channel on join
+
+# --- LAN mode (headless service) ---
+# [server]
+# host = "0.0.0.0"
+# port = 8787
+# allow_network = true                      # skip the interactive YES prompt
+# allowed_networks = ["192.168.1.0/24"]     # client IPs allowed (web UI + IRC); loopback always allowed
+# allowed_origins = ["http://agenthub.local:8787", "http://192.168.1.50:8787"]

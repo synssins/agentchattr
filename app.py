@@ -196,19 +196,52 @@ def _resolve_authenticated_agent(request: Request) -> dict | None:
 _PUBLIC_PREFIXES = ("/", "/static/")
 
 
+_allowed_networks: list = []
+
+
+def client_allowed(ip: str) -> bool:
+    """IP allowlist ([server] allowed_networks, CIDR). Loopback is always allowed.
+
+    Needed for LAN mode: the index page hands the session token to anyone who
+    can load it, so who may connect at all is the real access control.
+    """
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        # Not an IP: non-TCP transport (unix socket, in-process test client); local by nature.
+        return True
+    if addr.is_loopback:
+        return True
+    if getattr(addr, "ipv4_mapped", None):
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in _allowed_networks)
+
+
 def _install_security_middleware(token: str, cfg: dict):
     """Add token validation and origin checking middleware to the app."""
     import app as _self
+    import ipaddress
     _self.session_token = token
-    port = cfg.get("server", {}).get("port", 8300)
+    server_cfg = cfg.get("server", {})
+    port = server_cfg.get("port", 8300)
+    _self._allowed_networks[:] = [ipaddress.ip_network(n, strict=False)
+                                  for n in server_cfg.get("allowed_networks", [])]
     allowed_origins = {
         f"http://127.0.0.1:{port}",
         f"http://localhost:{port}",
+        # LAN names the UI is opened by, e.g. "http://agenthub.local:8787"
+        *server_cfg.get("allowed_origins", []),
     }
 
     class SecurityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
             path = request.url.path
+
+            client_ip = request.client.host if request.client else ""
+            if not client_allowed(client_ip):
+                return JSONResponse({"error": f"forbidden: {client_ip} is not in allowed_networks"},
+                                    status_code=403)
 
             # Static assets, index page, and uploaded images are public.
             # The index page injects the token client-side via same-origin script.

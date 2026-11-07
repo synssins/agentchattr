@@ -142,7 +142,12 @@ def main():
         print("  - If agents run with auto-approve, this means remote code execution")
         print()
         print("  Only use this on a trusted home network. Never on public/shared WiFi.")
-        if "--allow-network" not in sys.argv:
+        nets = config.get("server", {}).get("allowed_networks", [])
+        print(f"  Allowed client networks: {', '.join(nets) or 'loopback only'}")
+        if config.get("server", {}).get("allow_network"):
+            # Accepted in config (headless service): no interactive prompt.
+            print("  [server] allow_network = true: starting.\n")
+        elif "--allow-network" not in sys.argv:
             print("  Pass --allow-network to start anyway, or set host to 127.0.0.1.\n")
             sys.exit(1)
         else:

@@ -391,6 +391,10 @@ class Gateway:
             await asyncio.sleep(1)
 
     async def _on_connect(self, reader, writer):
+        peer = writer.get_extra_info("peername") or ("",)
+        if not self.hub.client_allowed(peer[0]):
+            writer.close()
+            return
         c = Client(self, reader, writer)
         self.clients.add(c)
         await c.run()

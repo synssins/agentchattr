@@ -21,7 +21,7 @@ class FakeAgents:
 
 
 def make_hub(tmp):
-    hub = types.SimpleNamespace()
+    hub = types.SimpleNamespace(client_allowed=lambda ip: True)
     hub.store = MessageStore(str(Path(tmp) / "log.jsonl"))
     hub.room_settings = {"username": "Alice", "channels": ["general", "dev"], "title": "Room"}
     hub.agents = FakeAgents()
@@ -152,3 +152,17 @@ class HelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllowlistTest(unittest.TestCase):
+    def test_client_allowed(self):
+        import ipaddress
+        import app
+        saved = list(app._allowed_networks)
+        try:
+            app._allowed_networks[:] = [ipaddress.ip_network("192.168.1.0/24")]
+            for ip, ok in [("127.0.0.1", True), ("::1", True), ("192.168.1.25", True),
+                           ("::ffff:192.168.1.25", True), ("10.0.0.5", False), ("192.168.2.1", False)]:
+                self.assertEqual(app.client_allowed(ip), ok, ip)
+        finally:
+            app._allowed_networks[:] = saved
