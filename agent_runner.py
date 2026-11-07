@@ -461,7 +461,7 @@ class Runner:
                 if m["sender"] == self.name:
                     msgs.append({"role": "assistant", "content": m["text"]})
                     continue
-                text = f"{m['sender']}: {self._text(m)}"
+                text = f"#{m['id']} {m['sender']}: {self._text(m)}"  # ids let agents cite messages
                 parts = []
                 if with_images and m["id"] in inline:
                     for path, a in self._files(m):
@@ -576,7 +576,7 @@ class Runner:
                and m["id"] >= start]
         if not new:
             return ""
-        transcript = "\n".join(f"{m['sender']}: {self._text(m)}" for m in new)
+        transcript = "\n".join(f"#{m['id']} {m['sender']}: {self._text(m)}" for m in new)
         hint = ("\n\n(Attached files are on disk at the paths shown; open them with your file-reading "
                 "tool to see them.)" if "[attached " in transcript else "")
         prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
