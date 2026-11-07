@@ -10,6 +10,7 @@
         { id: 'agents', label: 'Agents', render: (p) => window.AgentsSection.mount(p) },
         { id: 'connections', label: 'Connections', render: renderConnections },
         { id: 'apikeys', label: 'API keys', render: renderApiKeys },
+        { id: 'rulebooks', label: 'Rulebooks', render: renderRulebooks },
         { id: 'secrets', label: 'Secrets', render: renderSecrets },
         { id: 'mcp', label: 'MCP servers', render: renderMcp },
         { id: 'irc', label: 'IRC', render: renderIrc },
@@ -221,6 +222,69 @@
                 } }))])));
         panel.append(el('p', { class: 'settings-intro', text:
             'Limit: all agents run as the same Linux user on this server. Claude Code agents are blocked from reading AgentHub\'s data folder with their file tools, but an agent with Full access could still find a secret through the shell. Scope tokens narrowly (e.g. a fine-grained GitHub token for one repo).' }));
+    }
+
+    // ------------------------------------------------------------ Rulebooks
+    async function renderRulebooks(panel, editing) {
+        heading(panel, 'Rulebooks',
+            'Guides for kinds of work: story writing, code & processes, docs. Attach one to channels (everyone there follows it) or agents (they follow it everywhere). Every agent can open any rulebook on request. Ask for a review with: /review <rulebook> @agent <text or file path>.');
+        const [books, agents] = await Promise.all([api('GET', '/api/admin/rulebooks'), api('GET', '/api/managed-agents')]);
+        const channels = (typeof channelList !== 'undefined' && channelList.length) ? channelList : ['general'];
+        const e = editing || null;
+        if (e) {
+            const name = el('input', { value: e.name || '', placeholder: 'e.g. Story writing' });
+            const desc = el('input', { value: e.description || '', placeholder: 'One line: what it is for' });
+            const text = el('textarea', { rows: 14, placeholder: 'The rules, one per line or in short paragraphs.' });
+            text.value = e.text || '';
+            const pick = (items, chosen, prefix) => items.map(v => {
+                const cb = el('input', { type: 'checkbox', value: v, checked: (chosen || []).includes(v) });
+                return { cb, label: el('label', { class: 'agents-toggle' }, cb, el('span', { text: prefix + v })) };
+            });
+            const chans = pick(channels, e.channels, '#');
+            const ags = pick(agents.map(a => a.name), e.agents, '@');
+            const form = el('form', { class: 'agents-form' },
+                el('h2', { text: e.name ? `Edit "${e.name}"` : 'New rulebook' }),
+                el('div', { class: 'agents-inline' },
+                    el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
+                    el('label', { class: 'agents-field' }, el('span', { text: 'Description' }), desc)),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Rules' }), text),
+                el('div', { class: 'agents-field' }, el('span', { text: 'Follow it in these channels' }),
+                    el('div', { class: 'agents-inline' }, ...chans.map(x => x.label))),
+                el('div', { class: 'agents-field' }, el('span', { text: 'Agents that always follow it' }),
+                    el('div', { class: 'agents-inline' }, ...ags.map(x => x.label))),
+                el('div', { class: 'agents-actions' },
+                    el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('rulebooks') }),
+                    el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save rulebook' })));
+            form.addEventListener('submit', async (ev) => {
+                ev.preventDefault();
+                try {
+                    await api('POST', '/api/admin/rulebooks', { original: e.name || null, name: name.value.trim(),
+                        description: desc.value.trim(), text: text.value,
+                        channels: chans.filter(x => x.cb.checked).map(x => x.cb.value),
+                        agents: ags.filter(x => x.cb.checked).map(x => x.cb.value) });
+                    show('rulebooks');
+                } catch (err) { alert(err.message); }
+            });
+            panel.textContent = '';
+            panel.append(form);
+            name.focus();
+            return;
+        }
+        panel.append(el('button', { class: 'agents-btn primary', text: '+ New rulebook', onclick: () => {
+            const p = document.getElementById('settings-panel'); renderRulebooks(p, {});
+        } }));
+        panel.append(table(['Rulebook', 'Applies to', ''], books.map(b => [
+            el('div', {}, el('strong', { text: b.name }), el('div', { class: 'agents-sub', text: b.description || '' })),
+            [...(b.channels || []).map(c => '#' + c), ...(b.agents || []).map(a => '@' + a)].join(' ') || 'on request only',
+            el('div', { class: 'agents-inline' },
+                el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
+                    const p = document.getElementById('settings-panel'); renderRulebooks(p, b);
+                } }),
+                el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
+                    if (!confirm(`Delete rulebook "${b.name}"?`)) return;
+                    await api('DELETE', `/api/admin/rulebooks/${encodeURIComponent(b.name)}`);
+                    show('rulebooks');
+                } }))])));
     }
 
     // ------------------------------------------------------------ MCP servers

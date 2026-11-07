@@ -300,6 +300,13 @@ class Runner:
                 + (f"; allowed programs: {', '.join(allowed)}" if allowed and perm != "full" else "")
                 + f"; working directory: {self.spec.get('cwd') or '~'}). Installed skills (call load_skill "
                 "before using one):\n" + "\n".join(f"- {n}: {v['description']}" for n, v in sorted(sk.items())))
+        try:
+            import rulebooks
+            rb = rulebooks.prompt_for(self.name, channel)
+        except Exception:
+            rb = ""
+        if rb:
+            parts.append(rb)
         if granted:
             parts.append("Credentials granted to you by the owner, available as environment variables: "
                          + ", ".join(granted) + ". Other agents do not have them; never print their values.")
@@ -363,6 +370,8 @@ class Runner:
                     reply = reply[len(prefix):].strip()
             if reply and reply != NO_REPLY:
                 hub.store.add(self.name, reply, channel=channel)
+            else:
+                log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
             if renames:  # after posting, so the reply is re-attributed with the rest
                 note = self.m.rename(self.name, renames[-1].strip())
                 hub.store.add("system", note, msg_type="system", channel=channel)
@@ -702,7 +711,9 @@ class AgentManager:
             return f"Rename failed: {result}"
         self.hub.store.rename_sender(old, new)
         import admin_api
+        import rulebooks
         admin_api.rename_grants(old, new)
+        rulebooks.rename_agent(old, new)
         with self.lock:
             spec = self.specs.pop(old)
             spec.update(name=new, label=label)
@@ -760,7 +771,9 @@ class AgentManager:
 
     def delete(self, name: str):
         import admin_api
+        import rulebooks
         admin_api.rename_grants(name, None)
+        rulebooks.rename_agent(name, None)
         self.forget_member(name)
         self.specs.pop(name, None)
         self.state.pop(name, None)

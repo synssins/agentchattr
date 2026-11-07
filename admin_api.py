@@ -483,6 +483,38 @@ async def mcp_test(name: str):
     return {"tools": [t["name"] for t in tools]}
 
 
+# ---------------------------------------------------------------- rulebooks
+
+@router.get("/api/admin/rulebooks")
+async def rulebooks_list():
+    import rulebooks
+    return [dict(b, path=rulebooks.path_of(b)) for b in rulebooks.load()]
+
+
+@router.post("/api/admin/rulebooks")
+async def rulebooks_upsert(request: Request):
+    import rulebooks
+    body = await request.json()
+    name = str(body.get("name", "")).strip()[:60]
+    if not name:
+        return JSONResponse({"error": "a name is required"}, status_code=400)
+    original = str(body.get("original") or name)  # renaming keeps the slot
+    books = [b for b in rulebooks.load() if b["name"] not in (original, name)]
+    books.append({"name": name, "description": str(body.get("description", ""))[:200],
+                  "text": str(body.get("text", ""))[:20000],
+                  "channels": [str(c) for c in body.get("channels", [])],
+                  "agents": [str(a) for a in body.get("agents", [])]})
+    rulebooks.save(books)
+    return await rulebooks_list()
+
+
+@router.delete("/api/admin/rulebooks/{name}")
+async def rulebooks_delete(name: str):
+    import rulebooks
+    rulebooks.save([b for b in rulebooks.load() if b["name"] != name])
+    return await rulebooks_list()
+
+
 # ---------------------------------------------------------------- IRC
 
 @router.get("/api/admin/irc")

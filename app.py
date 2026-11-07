@@ -1219,6 +1219,36 @@ async def websocket_endpoint(websocket: WebSocket):
                         store.clear(channel=channel)
                         await broadcast_clear(channel=channel)
                         continue
+                    if cmd == "/review":
+                        # /review <rulebook> [@agents] <text or file path>
+                        import re as _rx  # websocket_endpoint binds _re locally later on
+                        import rulebooks
+                        rest = text[len("/review"):].strip()
+                        book = None
+                        for b in sorted(rulebooks.load(), key=lambda b: -len(b["name"])):
+                            for key in (b["name"], rulebooks.slug(b["name"])):
+                                if rest.lower().startswith(key.lower()):
+                                    book, rest = b, rest[len(key):].strip()
+                                    break
+                            if book:
+                                break
+                        names = [n for n in rulebooks.load()]
+                        if not book:
+                            store.add("system", "Usage: /review <rulebook> [@agent ...] <text or file path>. Rulebooks: "
+                                      + ", ".join(b["name"] for b in names), msg_type="system", channel=channel)
+                            continue
+                        targets = [m.group(1) for m in _rx.finditer(r"@([\w-]+)", rest)]
+                        body = _rx.sub(r"@[\w-]+\s*", "", rest).strip()
+                        if not targets:
+                            targets = [a for a in book.get("agents", [])
+                                       if not agent_manager or agent_manager.in_channel(a, channel)]
+                        if not targets or not body:
+                            store.add("system", "Name an agent (@name) and include the text or a file path to review"
+                                      + ("" if targets else f"; no agent is attached to \"{book['name']}\" here") + ".",
+                                      msg_type="system", channel=channel)
+                            continue
+                        store.add(sender, rulebooks.review_message(book, targets, body), channel=channel)
+                        continue
                     if cmd == "/rename":
                         note = (await asyncio.to_thread(agent_manager.rename, cmd_parts[1], " ".join(cmd_parts[2:]))
                                 if agent_manager and len(cmd_parts) > 2 else "Usage: /rename <agent> <new name>")

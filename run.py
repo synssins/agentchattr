@@ -61,6 +61,10 @@ def main():
     from app import app, configure, set_event_loop, store as _store_ref
     configure(config, session_token=session_token)
 
+    # Rulebooks (style/process guides), mirrored to ./rulebooks/*.md for CLI agents
+    import rulebooks
+    rulebooks.setup(config, ROOT)
+
     # Settings back end: /v1 keys, self-registration, /llms.txt, IRC
     import admin_api
     admin_api.setup(sys.modules["app"], config)

@@ -478,3 +478,31 @@ class McpTest(JoinTest):
         self.assertIn("mcp__echo", cmd)
         admin_api.rename_grants("qwen", "marcus")
         self.assertEqual(len(mcp_hub.tool_specs_for("marcus")[0]), 1)
+
+
+class RulebooksTest(unittest.TestCase):
+    def setUp(self):
+        import rulebooks
+        self.rb = rulebooks
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        rulebooks.setup({"server": {"data_dir": str(self.tmp / "data")}}, self.tmp)
+
+    def test_starters_mirrored_and_prompt_sections(self):
+        books = self.rb.load()
+        self.assertEqual([b["name"] for b in books], ["Writing (general)", "Story writing", "Code & processes"])
+        self.assertTrue((self.tmp / "rulebooks" / "code-processes.md").exists())
+        books[1]["channels"] = ["fiction"]
+        books[2]["agents"] = ["lazlo"]
+        self.rb.save(books)
+        p = self.rb.prompt_for("lazlo", "general")
+        self.assertIn("Bespoke is bad", p)                       # attached to the agent: in full
+        self.assertIn("story-writing.md", p)                       # others: listed with a path
+        self.assertNotIn("Show through action", p)
+        self.assertIn("Show through action", self.rb.prompt_for("kestrel", "fiction"))  # channel attach
+        self.rb.rename_agent("lazlo", "marcus")
+        self.assertIn("Bespoke is bad", self.rb.prompt_for("marcus", "general"))
+        msg = self.rb.review_message(self.rb.find("story writing"), ["kestrel"], "Once upon a time.")
+        self.assertTrue(msg.startswith("@kestrel Please review"))
+        self.assertIn("Once upon a time.", msg)
