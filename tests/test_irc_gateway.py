@@ -140,9 +140,10 @@ class IrcGatewayTest(unittest.IsolatedAsyncioTestCase):
 class ChannelMembersTest(unittest.TestCase):
     def test_members_per_channel(self):
         gw = irc_gateway.Gateway(types.SimpleNamespace(room_settings={"username": "Alice"}), "", False, 0)
-        gw.update_status({"claude": {"available": True}, "irc-bot": {"available": True, "channels": ["dev"]}})
-        self.assertEqual(gw.members("general"), ["Alice", "claude"])
-        self.assertEqual(gw.members("dev"), ["Alice", "claude", "irc-bot"])
+        gw.update_status({"claude": {"available": True, "channels": ["general"]},
+                          "irc-bot": {"available": True, "channels": ["general", "dev"]}})
+        self.assertEqual(gw.members("general"), ["Alice", "claude", "irc-bot"])
+        self.assertEqual(gw.members("dev"), ["Alice", "irc-bot"])
 
 
 class HelpersTest(unittest.TestCase):

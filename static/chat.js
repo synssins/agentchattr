@@ -1863,11 +1863,11 @@ function renderMembers() {
     const rows = [{ name: username, label: username, color: 'var(--user-color)', state: 'online', role: 'you' }];
     for (const [name, cfg] of Object.entries(agentConfig)) {
         const st = _memberStatus[name] || {};
-        // Agents limited to some channels only show in those channels
-        if (Array.isArray(st.channels) && st.channels.length && !st.channels.includes(activeChannel)) continue;
+        // #general has everyone; other channels only the agents added to them
+        if (activeChannel !== 'general' && !(st.channels || []).includes(activeChannel)) continue;
         const state = st.available ? (st.busy ? 'working' : 'online') : 'offline';
         rows.push({ name, label: cfg.label || name, color: colorOverrides[name] || cfg.color || '#888',
-                    state, role: _agentRoles[name] || '' });
+                    state, role: _agentRoles[name] || '', managed: !!st.managed });
     }
     const groups = [['Online', rows.filter(r => r.state !== 'offline')],
                     ['Offline', rows.filter(r => r.state === 'offline')]];
@@ -1898,6 +1898,15 @@ function renderMembers() {
             sub.textContent = m.state === 'working' ? 'working…' : (m.role === 'you' ? 'you' : (m.role || m.state));
             text.append(nm, sub);
             row.append(av, text);
+            if (m.role !== 'you' && activeChannel !== 'general') {
+                const rm = document.createElement('button');
+                rm.className = 'member-remove';
+                rm.textContent = '×';
+                rm.title = `Remove @${m.name} from #${activeChannel}`;
+                rm.setAttribute('aria-label', rm.title);
+                rm.addEventListener('click', (e) => { e.stopPropagation(); setChannelMember(m.name, false); });
+                row.append(rm);
+            }
             if (m.role !== 'you') {
                 row.addEventListener('click', () => {
                     const input = document.getElementById('input');
@@ -1908,7 +1917,60 @@ function renderMembers() {
             list.appendChild(row);
         }
     }
+    const add = document.createElement('button');
+    add.className = 'members-add';
+    add.textContent = '+ Agent';
+    add.title = activeChannel === 'general' ? 'Create an agent (Settings > Agents)' : `Add an agent to #${activeChannel}`;
+    add.addEventListener('click', (e) => { e.stopPropagation(); openAddAgentPicker(add); });
+    list.appendChild(add);
     document.getElementById('members-count').textContent = rows.filter(r => r.state !== 'offline').length;
+}
+
+async function setChannelMember(name, on) {
+    const res = await fetch('/api/channel-members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
+        body: JSON.stringify({ channel: activeChannel, name, on }),
+    });
+    if (!res.ok) alert((await res.json().catch(() => ({}))).error || 'Could not change channel members');
+}
+
+// "+ Agent": in #general create one; elsewhere add an existing agent or spawn a fresh instance here
+function openAddAgentPicker(anchor) {
+    document.querySelector('.members-picker')?.remove();
+    if (activeChannel === 'general') { window.openSettings('agents'); return; }
+    const pick = document.createElement('div');
+    pick.className = 'members-picker';
+    pick.setAttribute('role', 'menu');
+    const section = (title, items) => {
+        if (!items.length) return;
+        const h = document.createElement('div');
+        h.className = 'members-group';
+        h.textContent = title;
+        pick.appendChild(h);
+        for (const [label, fn] of items) {
+            const b = document.createElement('button');
+            b.className = 'members-picker-item';
+            b.setAttribute('role', 'menuitem');
+            b.textContent = label;
+            b.addEventListener('click', () => { pick.remove(); fn(); });
+            pick.appendChild(b);
+        }
+    };
+    const names = Object.keys(agentConfig);
+    section('Add to this channel', names
+        .filter(n => !((_memberStatus[n] || {}).channels || []).includes(activeChannel))
+        .map(n => [`@${n}`, () => setChannelMember(n, true)]));
+    section('New instance here (fresh context)', names
+        .filter(n => (_memberStatus[n] || {}).managed)
+        .map(n => [`+ @${n}`, () => ws.send(JSON.stringify({ type: 'message', text: `/spawn ${n}`, sender: username, channel: activeChannel }))]));
+    section('Other', [['Create a new agent…', () => window.openSettings('agents')]]);
+    anchor.after(pick);
+    pick.querySelector('button')?.focus();
+    setTimeout(() => document.addEventListener('click', function close(e) {
+        if (!pick.contains(e.target)) { pick.remove(); document.removeEventListener('click', close); }
+    }), 0);
+    pick.addEventListener('keydown', (e) => { if (e.key === 'Escape') { pick.remove(); anchor.focus(); } });
 }
 
 function updateStatus(data) {
@@ -2286,6 +2348,8 @@ const SLASH_COMMANDS = [
     { cmd: '/summary', desc: 'Summarize recent messages — tag an agent (e.g. /summary @claude)', broadcast: false, needsMention: true },
     { cmd: '/summarise', desc: 'Summarize recent messages — tag an agent (e.g. /summarise @claude)', broadcast: false, needsMention: true, hidden: true },
     { cmd: '/continue', desc: 'Resume after loop guard pauses', broadcast: false },
+    { cmd: '/spawn', desc: 'New instance of a server agent in this channel: /spawn claudecode [name]', broadcast: false },
+    { cmd: '/despawn', desc: 'Remove a spawned instance: /despawn claudecode-2', broadcast: false },
     { cmd: '/clear', desc: 'Clear messages in current channel', broadcast: false },
 ];
 

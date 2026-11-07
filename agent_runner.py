@@ -247,7 +247,10 @@ class Runner:
     def _api_turn(self, channel: str) -> str:
         n = int(self.spec.get("context_messages") or 30)
         msgs = []
+        start = int(self.spec.get("context_from") or 0)
         for m in self.m.hub.store.get_recent(n, channel=channel):
+            if m["id"] < start:
+                continue  # spawned instance: its conversation starts at spawn time
             if m.get("sender") in ("system", "") or m.get("type", "chat") != "chat":
                 continue
             if m["sender"] == self.name:
@@ -266,7 +269,9 @@ class Runner:
         store = self.m.hub.store
         new = store.get_since(cursor, channel=channel) if session else \
             store.get_recent(int(spec.get("context_messages") or 30), channel=channel)
-        new = [m for m in new if m.get("type", "chat") == "chat" and m.get("sender") != self.name]
+        start = int(spec.get("context_from") or 0)
+        new = [m for m in new if m.get("type", "chat") == "chat" and m.get("sender") != self.name
+               and m["id"] >= start]
         if not new:
             return ""
         transcript = "\n".join(f"{m['sender']}: {m['text']}" for m in new)
@@ -295,6 +300,12 @@ class AgentManager:
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}
         self.runners: dict[str, Runner] = {}
+        # Channel membership for every agent (managed or not): #general holds
+        # everyone; other channels hold only the agents added to them.
+        self.members_path = Path(data_dir) / "channel_members.json"
+        self.members: dict[str, list[str]] = {}
+        if self.members_path.exists():
+            self.members = json.loads(self.members_path.read_text("utf-8"))
         if self.path.exists():
             self.specs = {s["name"]: s for s in json.loads(self.path.read_text("utf-8"))}
         if self.state_path.exists():
@@ -315,13 +326,24 @@ class AgentManager:
             self._write(self.state_path, self.state)
 
     def in_channel(self, name: str, channel: str) -> bool:
-        """Managed agents can be limited to some channels (empty list = all).
-        Agents not managed here (wrappers, self-registered) are in every channel."""
-        chans = self.specs.get(name, {}).get("channels") or []
-        return not chans or channel in chans
+        return channel == "general" or name in self.members.get(channel, [])
 
-    def channels_of(self, name: str) -> list[str] | None:
-        return self.specs.get(name, {}).get("channels") or None
+    def channels_of(self, name: str) -> list[str]:
+        return ["general"] + sorted(ch for ch, names in self.members.items() if name in names and ch != "general")
+
+    def set_member(self, name: str, channel: str, on: bool):
+        if channel == "general":
+            return  # everyone is always in #general
+        with self.lock:
+            names = [n for n in self.members.get(channel, []) if n != name]
+            if on:
+                names.append(name)
+            self.members[channel] = names
+            self._write(self.members_path, self.members)
+
+    def forget_member(self, name: str):
+        for ch in list(self.members):
+            self.set_member(name, ch, False)
 
     @staticmethod
     def public(spec: dict) -> dict:
@@ -330,7 +352,9 @@ class AgentManager:
         return out
 
     def list(self) -> list[dict]:
-        return [dict(self.public(s), running=s["name"] in self.runners) for s in self.specs.values()]
+        return [dict(self.public(s), running=s["name"] in self.runners,
+                     channels=[c for c in self.channels_of(s["name"]) if c != "general"])
+                for s in self.specs.values()]
 
     def validate(self, spec: dict) -> str | None:
         import re
@@ -339,7 +363,7 @@ class AgentManager:
         if spec.get("kind") not in KINDS:
             return f"kind must be one of {KINDS}"
         if not isinstance(spec.get("channels", []), list):
-            return "channels must be a list (empty = all channels)"
+            return "channels must be a list of channel names"
         if spec.get("permissions", "read") not in PERMISSIONS:
             return f"permissions must be one of {PERMISSIONS}"
         live = self.hub.registry.get_instance(spec["name"]) if self.hub.registry else None
@@ -361,12 +385,46 @@ class AgentManager:
         err = self.validate(spec)
         if err:
             return err
+        chans = spec.pop("channels", None)  # membership lives in channel_members.json
         self.specs[spec["name"]] = spec
         self.save()
+        if chans is not None:
+            for ch in set(self.members) | set(chans):
+                self.set_member(spec["name"], ch, ch in chans)
         self._apply(spec["name"])
         return None
 
+    def spawn(self, source: str, channel: str, name: str | None = None) -> str:
+        """New instance of a managed agent, pinned to `channel`, with fresh context:
+        a new CLI session, or (API agents) only messages from now on. -> status text."""
+        src = self.specs.get(source.lstrip("@").lower())
+        if not src:
+            return (f"No agent '{source}' runs on this server. Spawnable: "
+                    + (", ".join(sorted(self.specs)) or "none; add one in Settings > Agents"))
+        if not name:
+            n = 2
+            while f"{src['name']}-{n}" in self.specs or self.hub.registry.get_instance(f"{src['name']}-{n}"):
+                n += 1
+            name = f"{src['name']}-{n}"
+        spec = {k: v for k, v in src.items() if k not in ("label", "channels")}
+        spec.update(name=name.lstrip("@").lower(), channels=[channel], enabled=True, spawned=True,
+                    context_from=self.hub.store.last_id + 1)
+        err = self.upsert(spec)
+        return err or (f"Spawned @{spec['name']} (new instance of @{src['name']}) in #{channel}, "
+                       f"starting with fresh context. Remove it with /despawn {spec['name']}.")
+
+    def despawn(self, name: str) -> str:
+        name = name.lstrip("@").lower()
+        spec = self.specs.get(name)
+        if not spec:
+            return f"No agent '{name}' to remove."
+        if not spec.get("spawned"):
+            return f"@{name} wasn't created with /spawn; remove it in Settings > Agents."
+        self.delete(name)
+        return f"Removed @{name}."
+
     def delete(self, name: str):
+        self.forget_member(name)
         self.specs.pop(name, None)
         self.state.pop(name, None)
         self.save()

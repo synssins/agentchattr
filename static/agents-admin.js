@@ -93,7 +93,7 @@
                 el('div', { class: 'agents-info' },
                     el('div', { class: 'agents-name', text: `@${a.name}` }),
                     el('div', { class: 'agents-sub', text: (a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}`)
-                        + ' · ' + (a.channels && a.channels.length ? a.channels.map(c => '#' + c).join(' ') : 'all channels') })),
+                        + ' · #general' + (a.channels || []).map(c => ' #' + c).join('') })),
                 a.kind === 'api' ? el('span') : permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
@@ -136,7 +136,7 @@
         const d = dialog();
         d.textContent = '';
         const editing = !!a.name;
-        const allChannels = (typeof channelList !== 'undefined' && channelList.length) ? channelList : ['general'];
+        const allChannels = ((typeof channelList !== 'undefined' && channelList.length) ? channelList : []).filter(c => c !== 'general');
         const chosen = new Set(a.channels || []);
         const chanBoxes = allChannels.map(c => {
             const cb = el('input', { type: 'checkbox', value: c, checked: chosen.has(c) });
@@ -222,9 +222,9 @@
             apiBox, cliBox,
             field('Role / instructions', prompt),
             el('div', { class: 'agents-field' },
-                el('span', { text: 'Channels (none ticked = all channels)' }),
+                el('span', { text: 'Channels besides #general (every agent is always in #general)' }),
                 el('div', { class: 'agents-inline' }, ...chanBoxes.map(x => x.label)),
-                el('small', { text: 'The agent is only woken in these channels and only listed there. Coding agents keep a separate session per channel.' })),
+                el('small', { text: allChannels.length ? 'Other channels only contain the agents added to them. Coding agents keep a separate session per channel.' : 'No other channels yet. Create one with + in the channel list.' })),
             el('div', { class: 'agents-actions' },
                 el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: renderList }),
                 el('button', { type: 'submit', class: 'agents-btn primary', text: editing ? 'Save' : 'Add and start' })));

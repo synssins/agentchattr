@@ -128,9 +128,37 @@ class ChannelMembershipTest(unittest.TestCase):
         base = {"kind": "api", "base_url": "http://x/v1", "enabled": False}
         self.assertIsNone(mgr.upsert(dict(base, name="a", api_key="k1")))
         self.assertIsNone(mgr.upsert(dict(base, name="b", channels=["irc-work"], copy_key_from="a")))
-        self.assertTrue(mgr.in_channel("a", "general"))           # no channels = all
+        self.assertTrue(mgr.in_channel("a", "general"))           # everyone is in #general
+        self.assertFalse(mgr.in_channel("a", "irc-work"))         # other channels: only added agents
         self.assertTrue(mgr.in_channel("b", "irc-work"))
-        self.assertFalse(mgr.in_channel("b", "general"))
-        self.assertTrue(mgr.in_channel("remote-x", "general"))    # unmanaged agents: everywhere
+        self.assertTrue(mgr.in_channel("b", "general"))
+        self.assertFalse(mgr.in_channel("remote-x", "irc-work"))
+        mgr.set_member("remote-x", "irc-work", True)              # any agent can be added
+        self.assertEqual(mgr.channels_of("remote-x"), ["general", "irc-work"])
+        self.assertNotIn("channels", mgr.specs["b"])              # membership is stored separately
         self.assertEqual(mgr.specs["b"]["api_key"], "k1")          # duplicate reused the stored key
         self.assertNotIn("copy_key_from", mgr.specs["b"])
+
+
+class SpawnTest(unittest.TestCase):
+    def test_spawn_pins_channel_fresh_context_and_despawn(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store)
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None  # don't start runner threads in this test
+        self.assertIsNone(mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "api_key": "k"}))
+        store.add("alice", "old history")
+        note = mgr.spawn("@qwen", "irc-work")
+        self.assertIn("Spawned @qwen-2", note)
+        child = mgr.specs["qwen-2"]
+        self.assertEqual((child["api_key"], child["spawned"]), ("k", True))
+        self.assertEqual(mgr.channels_of("qwen-2"), ["general", "irc-work"])
+        self.assertEqual(child["context_from"], 1)  # history before the spawn is not its context
+        self.assertIn("Spawned @qwen-3", mgr.spawn("qwen", "irc-work"))
+        self.assertIn("No agent 'nope'", mgr.spawn("nope", "general"))
+        self.assertIn("wasn't created with /spawn", mgr.despawn("qwen"))
+        self.assertEqual(mgr.despawn("qwen-2"), "Removed @qwen-2.")
+        self.assertNotIn("qwen-2", mgr.specs)
+        self.assertEqual(mgr.channels_of("qwen-2"), ["general"])  # membership cleaned up

@@ -1218,6 +1218,20 @@ async def websocket_endpoint(websocket: WebSocket):
                         store.clear(channel=channel)
                         await broadcast_clear(channel=channel)
                         continue
+                    if cmd in ("/spawn", "/despawn"):
+                        # /spawn <agent> [name] | /despawn <name>: instances of server-run agents
+                        if not agent_manager:
+                            note = "Agents are not available."
+                        elif len(cmd_parts) < 2:
+                            note = f"Usage: {cmd} <agent>" + (" [new-name]" if cmd == "/spawn" else "")
+                        elif cmd == "/spawn":
+                            note = await asyncio.to_thread(agent_manager.spawn, cmd_parts[1], channel,
+                                                           cmd_parts[2] if len(cmd_parts) > 2 else None)
+                        else:
+                            note = await asyncio.to_thread(agent_manager.despawn, cmd_parts[1])
+                        store.add("system", note, msg_type="system", channel=channel)
+                        await broadcast_status()
+                        continue
                     if cmd == "/continue":
                         router.continue_routing()
                         store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)
@@ -2265,6 +2279,20 @@ async def managed_agents_upsert(request: Request):
 async def managed_agents_delete(name: str):
     await asyncio.to_thread(agent_manager.delete, name)
     return JSONResponse(agent_manager.list())
+
+
+@app.post("/api/channel-members")
+async def channel_members(request: Request):
+    """Add/remove any agent to/from a channel. #general always has everyone."""
+    body = await request.json()
+    channel, name = str(body.get("channel", "")), str(body.get("name", ""))
+    if channel not in room_settings.get("channels", []) or not name:
+        return JSONResponse({"error": "unknown channel or missing name"}, status_code=400)
+    await asyncio.to_thread(agent_manager.set_member, name, channel, bool(body.get("on")))
+    verb = "added to" if body.get("on") else "removed from"
+    store.add("system", f"@{name} {verb} #{channel}", msg_type="system", channel=channel)
+    await broadcast_status()
+    return JSONResponse({"ok": True, "channels": agent_manager.channels_of(name)})
 
 
 @app.post("/api/managed-agents/models")
