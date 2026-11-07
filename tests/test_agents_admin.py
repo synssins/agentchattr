@@ -54,6 +54,7 @@ class JoinTest(unittest.TestCase):
             _resolve_authenticated_agent=lambda req: registry.resolve_token(
                 req.headers.get("authorization", "")[7:]))
         self.hub = hub
+        admin_api._remote_cursors.clear()
         admin_api.setup(hub, {"server": {"data_dir": d}})
         app = FastAPI()
         app.include_router(admin_api.router)
@@ -337,3 +338,25 @@ class AttachmentTest(unittest.TestCase):
         out = agent_runner._to_anthropic([{"type": "text", "text": "hi"},
                                           {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}])
         self.assertEqual(out[1], {"type": "image", "source": {"type": "base64", "data": "QUJD", "media_type": "image/png"}})
+
+
+class SecretsTest(JoinTest):
+    def test_secret_only_reaches_granted_agent_and_follows_rename(self):
+        r = self.c.post("/api/admin/secrets", json={"name": "GitHub", "env": "gh_token", "value": "ghp_x",
+                                                     "grants": ["claude"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("ghp_x", r.text)                                  # never returned
+        self.assertEqual(admin_api.secrets_for("claude"), {"GH_TOKEN": "ghp_x"})
+        self.assertEqual(admin_api.secrets_for("agy"), {})
+        self.c.post("/api/admin/secrets", json={"name": "GitHub", "env": "GH_TOKEN", "grants": ["claude", "agy"]})
+        self.assertEqual(admin_api.secrets_for("agy"), {"GH_TOKEN": "ghp_x"})  # blank value kept
+        admin_api.rename_grants("claude", "marcus")
+        self.assertEqual(admin_api.secrets_for("marcus"), {"GH_TOKEN": "ghp_x"})
+        self.assertEqual(admin_api.secrets_for("claude"), {})
+        admin_api.rename_grants("agy", None)
+        self.assertEqual(admin_api.secrets_for("agy"), {})
+
+    def test_claude_file_tools_blocked_from_data_dir(self):
+        cmd = agent_runner.cli_command({"kind": "claude", "permissions": "full"}, "hi", None, "S",
+                                       protect="/data/agenthub/data")
+        self.assertIn("Read(/data/agenthub/data/**)", cmd)

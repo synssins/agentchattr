@@ -10,6 +10,7 @@
         { id: 'agents', label: 'Agents', render: (p) => window.AgentsSection.mount(p) },
         { id: 'connections', label: 'Connections', render: renderConnections },
         { id: 'apikeys', label: 'API keys', render: renderApiKeys },
+        { id: 'secrets', label: 'Secrets', render: renderSecrets },
         { id: 'irc', label: 'IRC', render: renderIrc },
     ];
     let current = 'general';
@@ -167,6 +168,58 @@
                 await api('DELETE', `/api/admin/v1-keys/${encodeURIComponent(k.name)}`);
                 show('apikeys');
             } })])));
+    }
+
+    // ------------------------------------------------------------ Secrets
+    async function renderSecrets(panel, editing) {
+        heading(panel, 'Secrets',
+            'Tokens for outside services (GitHub, cloud CLIs, ...). Each is given only to the agents you tick, as an environment variable in their process. Values are write-only. Only coding agents (Claude Code, agy) can use them.');
+        const [secrets, agents] = await Promise.all([api('GET', '/api/admin/secrets'), api('GET', '/api/managed-agents')]);
+        const cli = agents.filter(a => a.kind !== 'api');
+        const e = editing || {};
+        const name = el('input', { value: e.name || '', placeholder: 'e.g. GitHub (Claude commits)', readonly: !!e.name });
+        const env = el('input', { value: e.env || '', placeholder: 'GH_TOKEN' });
+        const value = el('input', { type: 'password', autocomplete: 'off',
+            placeholder: e.has_value ? 'Stored. Leave blank to keep it.' : 'Token value' });
+        const grants = new Set(e.grants || []);
+        const boxes = cli.map(a => {
+            const cb = el('input', { type: 'checkbox', value: a.name, checked: grants.has(a.name) });
+            return { cb, label: el('label', { class: 'agents-toggle' }, cb, el('span', { text: '@' + a.name })) };
+        });
+        const form = el('form', { class: 'agents-form settings-secret-box' },
+            el('strong', { text: e.name ? `Edit ${e.name}` : 'Add a secret' }),
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Environment variable' }), env)),
+            el('label', { class: 'agents-field' }, el('span', { text: 'Value' }), value),
+            el('div', { class: 'agents-field' }, el('span', { text: 'Agents allowed to use it' }),
+                cli.length ? el('div', { class: 'agents-inline' }, ...boxes.map(b => b.label))
+                           : el('small', { text: 'No coding agents yet (Settings > Agents).' })),
+            el('div', { class: 'agents-actions' },
+                e.name ? el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('secrets') }) : null,
+                el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save secret' })));
+        form.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            try {
+                await api('POST', '/api/admin/secrets', { name: name.value.trim(), env: env.value.trim(), value: value.value,
+                    grants: boxes.filter(b => b.cb.checked).map(b => b.cb.value) });
+                show('secrets');
+            } catch (err) { alert(err.message); }
+        });
+        panel.append(form);
+        if (secrets.length) panel.append(table(['Name', 'Variable', 'Allowed agents', 'Updated', ''], secrets.map(x => [
+            x.name, x.env, (x.grants || []).map(g => '@' + g).join(', ') || 'nobody', x.updated || x.created,
+            el('div', { class: 'agents-inline' },
+                el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
+                    const p = document.getElementById('settings-panel'); p.textContent = ''; renderSecrets(p, x);
+                } }),
+                el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
+                    if (!confirm(`Delete secret "${x.name}"? Agents lose ${x.env} from their next turn.`)) return;
+                    await api('DELETE', `/api/admin/secrets/${encodeURIComponent(x.name)}`);
+                    show('secrets');
+                } }))])));
+        panel.append(el('p', { class: 'settings-intro', text:
+            'Limit: all agents run as the same Linux user on this server. Claude Code agents are blocked from reading AgentHub\'s data folder with their file tools, but an agent with Full access could still find a secret through the shell. Scope tokens narrowly (e.g. a fine-grained GitHub token for one repo).' }));
     }
 
     // ------------------------------------------------------------ IRC

@@ -333,6 +333,72 @@ curl -s "{base}/api/messages?channel=general&limit=50" -H "Authorization: Bearer
 """)
 
 
+# ---------------------------------------------------------------- secrets
+
+ENV_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
+
+
+def secrets_for(agent: str) -> dict[str, str]:
+    """{ENV_VAR: value} for the secrets granted to `agent` (injected into its CLI process)."""
+    return {s["env"]: s["value"] for s in _load("secrets.json", []) if agent in s.get("grants", [])}
+
+
+def secret_names_for(agent: str) -> list[str]:
+    return [f"{s['env']} ({s['name']})" for s in _load("secrets.json", []) if agent in s.get("grants", [])]
+
+
+def rename_grants(old: str, new: str | None):
+    """Grants follow an agent rename; new=None drops them (agent deleted)."""
+    with _lock:
+        secrets = _load("secrets.json", [])
+        if not any(old in s.get("grants", []) for s in secrets):
+            return
+        for s in secrets:
+            g = [n for n in s.get("grants", []) if n != old]
+            if new and old in s.get("grants", []):
+                g.append(new)
+            s["grants"] = g
+        _save("secrets.json", secrets)
+
+
+@router.get("/api/admin/secrets")
+async def secrets_list():
+    # Values never leave the server.
+    return [{k: v for k, v in s.items() if k != "value"} | {"has_value": bool(s.get("value"))}
+            for s in _load("secrets.json", [])]
+
+
+@router.post("/api/admin/secrets")
+async def secrets_upsert(request: Request):
+    body = await request.json()
+    name = str(body.get("name", "")).strip()[:60]
+    env = str(body.get("env", "")).strip().upper()
+    if not name or not ENV_RE.fullmatch(env):
+        return JSONResponse({"error": "a name and an environment variable (e.g. GH_TOKEN) are required"},
+                            status_code=400)
+    with _lock:
+        secrets = _load("secrets.json", [])
+        old = next((s for s in secrets if s["name"] == name), None)
+        if any(s["env"] == env and s is not old for s in secrets):
+            return JSONResponse({"error": f"{env} is already used by another secret"}, status_code=409)
+        value = str(body.get("value") or "") or (old or {}).get("value", "")
+        if not value:
+            return JSONResponse({"error": "a value is required"}, status_code=400)
+        entry = {"name": name, "env": env, "value": value,
+                 "grants": [str(g) for g in body.get("grants", [])],
+                 "created": (old or {}).get("created", _now()), "updated": _now()}
+        secrets = [s for s in secrets if s is not old] + [entry]
+        _save("secrets.json", secrets)
+    return await secrets_list()
+
+
+@router.delete("/api/admin/secrets/{name}")
+async def secrets_delete(name: str):
+    with _lock:
+        _save("secrets.json", [s for s in _load("secrets.json", []) if s["name"] != name])
+    return await secrets_list()
+
+
 # ---------------------------------------------------------------- IRC
 
 @router.get("/api/admin/irc")

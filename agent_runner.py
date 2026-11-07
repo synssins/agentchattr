@@ -123,11 +123,14 @@ def list_models(base_url: str, api_key: str, api_format: str) -> list[str]:
     return sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
 
 
-def cli_command(spec: dict, prompt: str, session: str | None, system: str) -> list[str]:
+def cli_command(spec: dict, prompt: str, session: str | None, system: str,
+                protect: str | None = None) -> list[str]:
     kind, perm = spec["kind"], spec.get("permissions", "read")
     exe = _which(spec.get("command") or kind) or kind
     if kind == "claude":
         cmd = [exe, "-p", prompt, "--output-format", "json", "--append-system-prompt", system]
+        if protect:  # AgentHub's data dir holds secrets and keys: keep file tools out of it
+            cmd += ["--disallowedTools", f"Read({protect}/**)", f"Edit({protect}/**)", f"Write({protect}/**)"]
         if session:
             cmd += ["--resume", session]
         if perm == "full":
@@ -252,6 +255,14 @@ class Runner:
     def _system(self, channel: str = "general") -> str:
         import mcp_bridge
         parts = [ROOM_PROMPT.format(name=self.name), PERSONA_HELP]
+        try:
+            import admin_api
+            granted = admin_api.secret_names_for(self.name)
+        except Exception:
+            granted = []
+        if granted and self.spec.get("kind") != "api":
+            parts.append("Credentials granted to you by the owner, available as environment variables: "
+                         + ", ".join(granted) + ". Other agents do not have them; never print their values.")
         persona = self.spec.get("persona")
         parts.append(f"Your persona (written by you):\n{persona}" if persona else
                      "You have no persona yet. Define one, distinct from the other agents, the first "
@@ -383,9 +394,13 @@ class Runner:
                 "tool to see them.)" if "[attached " in transcript else "")
         prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
-        cmd = cli_command(spec, prompt, session, self._system(channel))
+        import admin_api
+        cmd = cli_command(spec, prompt, session, self._system(channel),
+                          protect=str(Path(self.m.data_dir).resolve()))
+        env = dict(os.environ)
+        env.update(admin_api.secrets_for(self.name))  # only the secrets granted to this agent
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     stdin=subprocess.DEVNULL, text=True)
+                                     stdin=subprocess.DEVNULL, text=True, env=env)
         try:
             stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -587,6 +602,8 @@ class AgentManager:
                 self.runners[old].start()
             return f"Rename failed: {result}"
         self.hub.store.rename_sender(old, new)
+        import admin_api
+        admin_api.rename_grants(old, new)
         with self.lock:
             spec = self.specs.pop(old)
             spec.update(name=new, label=label)
@@ -643,6 +660,8 @@ class AgentManager:
         return f"Removed @{name}."
 
     def delete(self, name: str):
+        import admin_api
+        admin_api.rename_grants(name, None)
         self.forget_member(name)
         self.specs.pop(name, None)
         self.state.pop(name, None)
