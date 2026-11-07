@@ -722,6 +722,10 @@ class AgentManager:
         old = self.specs.get(spec.get("name", "")) or self.specs.get(src or "", {})
         if not spec.get("api_key") and old.get("api_key"):
             spec["api_key"] = old["api_key"]  # blank in the form = keep the stored key
+        if not src:  # server-managed fields the edit form never sends back
+            for k in ("spawned", "context_from"):
+                if k in old and k not in spec:
+                    spec[k] = old[k]
         spec.setdefault("permissions", "read")
         err = self.validate(spec)
         if err:

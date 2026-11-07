@@ -465,6 +465,18 @@ class ToolLoopTest(unittest.TestCase):
         self.assertIn("There is no separate grep", seen[1][-1]["content"])
         self.assertEqual(seen[2][-2]["reasoning_details"], [{"sig": "x"}])
 
+    def test_form_edit_keeps_spawned_and_context_from(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name),
+                                    store=MessageStore(str(Path(tmp.name) / "log.jsonl")),
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "spawned": True, "context_from": 214})
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "persona": "new"})
+        self.assertEqual((mgr.specs["iris"]["spawned"], mgr.specs["iris"]["context_from"]), (True, 214))
+
     def test_no_call_when_own_reply_is_last(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
