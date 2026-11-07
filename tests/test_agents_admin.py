@@ -289,3 +289,51 @@ class ChannelDeleteTest(unittest.TestCase):
         r.proc = sp.Popen(["sleep", "30"])
         r.shutdown()
         self.assertIsNotNone(r.proc.wait(timeout=5))
+
+
+class AttachmentTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.updir = Path(tmp.name) / "uploads"
+        self.updir.mkdir()
+        (self.updir / "abc.png").write_bytes(b"\x89PNG fake")
+        self.store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        self.store.upload_dir = self.updir
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=self.store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        self.mgr = agent_runner.AgentManager(hub, tmp.name)
+        self.mgr._apply = lambda name: None
+        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1"})
+        self.store.add("alice", "@qwen what is this?", attachments=[
+            {"name": "image.png", "url": "/uploads/abc.png", "kind": "image", "media_type": "image/png"}])
+        self.r = agent_runner.Runner(self.mgr, "qwen")
+
+    def test_text_has_absolute_path(self):
+        text = self.r._text(self.store.get_recent(1)[0])
+        self.assertIn(f"[attached image image.png: {self.updir.resolve() / 'abc.png'}]", text)
+
+    def test_api_agent_gets_image_inline_then_text_only_fallback(self):
+        import urllib.error
+        calls = []
+
+        def fake(spec, system, msgs):
+            calls.append(msgs)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError("u", 400, "no vision", {}, None)
+            return "ok"
+        orig = agent_runner.call_api
+        agent_runner.call_api = fake
+        try:
+            self.assertEqual(self.r._api_turn("general"), "ok")
+        finally:
+            agent_runner.call_api = orig
+        parts = calls[0][-1]["content"]
+        self.assertTrue(parts[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertIsInstance(calls[1][-1]["content"], str)          # retry without the image
+        self.assertIn("abc.png", calls[1][-1]["content"])           # but still with its path
+
+    def test_anthropic_conversion(self):
+        out = agent_runner._to_anthropic([{"type": "text", "text": "hi"},
+                                          {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}])
+        self.assertEqual(out[1], {"type": "image", "source": {"type": "base64", "data": "QUJD", "media_type": "image/png"}})

@@ -257,9 +257,14 @@ async def agent_triggers(request: Request, wait: float = 25):
         msgs = hub.store.get_since(cursors.get(ch, -1), channel=ch)[-50:]  # ids start at 0
         if msgs:
             cursors[ch] = msgs[-1]["id"]
-        out.append({"channel": ch, "messages": [{"id": m["id"], "sender": m["sender"], "text": m["text"],
-                                                  "time": m.get("time")} for m in msgs
-                                                 if m.get("type", "chat") == "chat"]})
+        base = str(request.base_url).rstrip("/")
+        updir = Path(getattr(hub.store, "upload_dir", "uploads")).resolve()
+        out.append({"channel": ch, "messages": [
+            {"id": m["id"], "sender": m["sender"], "text": m["text"], "time": m.get("time"),
+             "attachments": [{"name": a.get("name"), "kind": a.get("kind"), "url": base + a["url"],
+                              "path": str(updir / Path(a["url"]).name)}
+                             for a in m.get("attachments") or [] if a.get("url")]}
+            for m in msgs if m.get("type", "chat") == "chat"]})
     return {"triggers": out}
 
 

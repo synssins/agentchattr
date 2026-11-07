@@ -19,6 +19,7 @@ they are never sent back to the browser).
 
 from __future__ import annotations  # AgentManager.list shadows list[...] in annotations
 
+import base64
 import json
 import logging
 import re
@@ -71,11 +72,31 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
         return json.loads(resp.read())
 
 
+MAX_IMAGES = 3              # newest images sent inline to API agents per turn
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _to_anthropic(content):
+    """OpenAI-style content parts -> Anthropic blocks (text stays a string)."""
+    if isinstance(content, str):
+        return content
+    out = []
+    for p in content:
+        if p.get("type") == "image_url":
+            head, data = p["image_url"]["url"].split(",", 1)
+            out.append({"type": "image", "source": {"type": "base64", "data": data,
+                                                    "media_type": head[5:].split(";")[0]}})
+        else:
+            out.append({"type": "text", "text": p.get("text", "")})
+    return out
+
+
 def call_api(spec: dict, system: str, messages: list[dict]) -> str:
-    """One chat call. messages: [{"role": "user"|"assistant", "content": str}]."""
+    """One chat call. messages: [{"role": "user"|"assistant", "content": str | parts}]."""
     base = spec.get("base_url", "").rstrip("/")
     key = spec.get("api_key", "")
     if spec.get("api_format") == "anthropic":
+        messages = [dict(m, content=_to_anthropic(m["content"])) for m in messages]
         payload = {"model": spec.get("model", ""), "max_tokens": 2048, "system": system,
                    "messages": messages}
         if spec.get("temperature") is not None:
@@ -208,6 +229,18 @@ class Runner:
                 self._turn(ch)
             self.stop.wait(1)
 
+    def _files(self, m: dict) -> list[tuple[str, dict]]:
+        """(absolute path, attachment) for each file on a message."""
+        updir = Path(getattr(self.m.hub.store, "upload_dir", "uploads")).resolve()
+        return [(str(updir / Path(a.get("url", "")).name), a) for a in m.get("attachments") or []
+                if a.get("url")]
+
+    def _text(self, m: dict) -> str:
+        """Message text plus on-disk paths of its attachments (agents read them by path)."""
+        extra = [f"[attached {'image' if a.get('kind') == 'image' else 'file'} "
+                 f"{a.get('name', '')}: {path}]" for path, a in self._files(m)]
+        return "\n".join([m.get("text", "")] + extra).strip()
+
     def _addressed(self, channel: str) -> bool:
         """Was the latest message from someone else aimed at this agent by name?
         (@all reaches everyone, but each agent may judge it isn't theirs to answer.)"""
@@ -291,20 +324,46 @@ class Runner:
 
     def _api_turn(self, channel: str) -> str:
         n = int(self.spec.get("context_messages") or 30)
-        msgs = []
         start = int(self.spec.get("context_from") or 0)
-        for m in self.m.hub.store.get_recent(n, channel=channel):
-            if m["id"] < start:
-                continue  # spawned instance: its conversation starts at spawn time
-            if m.get("sender") in ("system", "") or m.get("type", "chat") != "chat":
-                continue
-            if m["sender"] == self.name:
-                msgs.append({"role": "assistant", "content": m["text"]})
-            else:
-                msgs.append({"role": "user", "content": f"{m['sender']}: {m['text']}"})
-        if not msgs or msgs[0]["role"] != "user":  # Anthropic requires a user turn first
-            msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
-        return call_api(self.spec, self._system(channel), msgs)
+        history = [m for m in self.m.hub.store.get_recent(n, channel=channel)
+                   if m["id"] >= start  # spawned/fresh instance: conversation starts there
+                   and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"]
+        inline = set()  # ids of the newest messages whose images go inline
+        for m in reversed(history):
+            if len(inline) >= MAX_IMAGES:
+                break
+            if any(a.get("kind") == "image" for _, a in self._files(m)) and m["sender"] != self.name:
+                inline.add(m["id"])
+
+        def build(with_images: bool) -> list[dict]:
+            msgs = []
+            for m in history:
+                if m["sender"] == self.name:
+                    msgs.append({"role": "assistant", "content": m["text"]})
+                    continue
+                text = f"{m['sender']}: {self._text(m)}"
+                parts = []
+                if with_images and m["id"] in inline:
+                    for path, a in self._files(m):
+                        try:
+                            if a.get("kind") == "image" and os.path.getsize(path) <= MAX_IMAGE_BYTES:
+                                data = base64.b64encode(Path(path).read_bytes()).decode()
+                                parts.append({"type": "image_url", "image_url": {
+                                    "url": f"data:{a.get('media_type', 'image/png')};base64,{data}"}})
+                        except OSError:
+                            pass
+                msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
+            if not msgs or msgs[0]["role"] != "user":  # Anthropic requires a user turn first
+                msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
+            return msgs
+
+        try:
+            return call_api(self.spec, self._system(channel), build(with_images=bool(inline)))
+        except urllib.error.HTTPError as exc:
+            if not inline or exc.code not in (400, 415, 422):
+                raise
+            log.info("%s: model rejected images (%s); retrying text-only", self.name, exc.code)
+            return call_api(self.spec, self._system(channel), build(with_images=False))
 
     def _cli_turn(self, channel: str) -> str:
         spec = self.spec
@@ -319,8 +378,10 @@ class Runner:
                and m["id"] >= start]
         if not new:
             return ""
-        transcript = "\n".join(f"{m['sender']}: {m['text']}" for m in new)
-        prompt = f"New messages in #{channel}:\n\n{transcript}\n\nYour reply to post in #{channel}:"
+        transcript = "\n".join(f"{m['sender']}: {self._text(m)}" for m in new)
+        hint = ("\n\n(Attached files are on disk at the paths shown; open them with your file-reading "
+                "tool to see them.)" if "[attached " in transcript else "")
+        prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
         cmd = cli_command(spec, prompt, session, self._system(channel))
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
