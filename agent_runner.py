@@ -140,7 +140,7 @@ def list_models(base_url: str, api_key: str, api_format: str) -> list[str]:
 
 
 def cli_command(spec: dict, prompt: str, session: str | None, system: str,
-                protect: str | None = None) -> list[str]:
+                protect: str | None = None, mcp: tuple[str | None, list[str]] = (None, [])) -> list[str]:
     kind, perm = spec["kind"], spec.get("permissions", "read")
     exe = _which(spec.get("command") or kind) or kind
     if kind == "claude":
@@ -150,6 +150,10 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str,
         if session:
             cmd += ["--resume", session]
         extra = [f"Bash({c}:*)" for c in spec.get("allowed_commands") or []]  # e.g. Bash(slop-chop:*)
+        mcp_path, mcp_rules = mcp
+        if mcp_path:  # MCP servers granted in Settings; their tools are allowed at every level
+            cmd += ["--mcp-config", mcp_path]
+            extra += mcp_rules
         if perm == "full":
             cmd += ["--dangerously-skip-permissions"]
         elif perm == "edit":
@@ -413,7 +417,11 @@ class Runner:
         import agent_tools
         spec, system = self.spec, self._system(channel)
         perm, allowed = spec.get("permissions", "read"), spec.get("allowed_commands") or []
-        tools = agent_tools.tool_specs(perm, allowed) if spec.get("api_format") != "anthropic" else None
+        import mcp_hub
+        tools, mcp_names = None, {}
+        if spec.get("api_format") != "anthropic":
+            mcp_specs, mcp_names = mcp_hub.tool_specs_for(self.name)
+            tools = agent_tools.tool_specs(perm, allowed) + mcp_specs
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
@@ -439,8 +447,18 @@ class Runner:
                 except json.JSONDecodeError:
                     args = {}
                 log.info("%s tool %s %s", self.name, fn.get("name"), str(args)[:120])
-                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""),
-                             "content": runner.run(fn.get("name", ""), args if isinstance(args, dict) else {})})
+                args = args if isinstance(args, dict) else {}
+                if fn.get("name") in mcp_names:
+                    srv, tool = mcp_names[fn["name"]]
+                    try:
+                        out = mcp_hub.call_tool(srv, tool, args)[:agent_tools.MAX_OUT]
+                    except BaseException as exc:  # connection errors arrive as ExceptionGroups
+                        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                            raise
+                        out = f"error: MCP server {srv['name']} failed: {str(exc)[:300]}"
+                else:
+                    out = runner.run(fn.get("name", ""), args)
+                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": out})
         return "(stopped after too many tool steps)"
 
     def _cli_turn(self, channel: str) -> str:
@@ -462,8 +480,10 @@ class Runner:
         prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
         import admin_api
+        import mcp_hub
         cmd = cli_command(spec, prompt, session, self._system(channel),
-                          protect=str(Path(self.m.data_dir).resolve()))
+                          protect=str(Path(self.m.data_dir).resolve()),
+                          mcp=mcp_hub.claude_config(self.name, self.m.data_dir) if spec["kind"] == "claude" else (None, []))
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))  # only the secrets granted to this agent
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

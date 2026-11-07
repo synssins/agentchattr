@@ -348,17 +348,18 @@ def secret_names_for(agent: str) -> list[str]:
 
 
 def rename_grants(old: str, new: str | None):
-    """Grants follow an agent rename; new=None drops them (agent deleted)."""
+    """Grants (secrets, MCP servers) follow an agent rename; new=None drops them."""
     with _lock:
-        secrets = _load("secrets.json", [])
-        if not any(old in s.get("grants", []) for s in secrets):
-            return
-        for s in secrets:
-            g = [n for n in s.get("grants", []) if n != old]
-            if new and old in s.get("grants", []):
-                g.append(new)
-            s["grants"] = g
-        _save("secrets.json", secrets)
+        for fname in ("secrets.json", "mcp_servers.json"):
+            items = _load(fname, [])
+            if not any(old in s.get("grants", []) for s in items):
+                continue
+            for s in items:
+                g = [n for n in s.get("grants", []) if n != old]
+                if new and old in s.get("grants", []):
+                    g.append(new)
+                s["grants"] = g
+            _save(fname, items)
 
 
 @router.get("/api/admin/secrets")
@@ -397,6 +398,89 @@ async def secrets_delete(name: str):
     with _lock:
         _save("secrets.json", [s for s in _load("secrets.json", []) if s["name"] != name])
     return await secrets_list()
+
+
+# ---------------------------------------------------------------- MCP servers
+
+def _mcp_public(s: dict) -> dict:
+    out = {k: v for k, v in s.items() if k not in ("headers", "env")}
+    out["header_names"] = sorted((s.get("headers") or {}).keys())   # values stay on the server
+    out["env_names"] = sorted((s.get("env") or {}).keys())
+    return out
+
+
+def _kv(text) -> dict:
+    """'Key: value' / 'KEY=value' lines -> dict (blank value = keep the stored one)."""
+    if isinstance(text, dict):
+        return {str(k): str(v) for k, v in text.items()}
+    out = {}
+    for line in str(text or "").splitlines():
+        m = re.match(r"\s*([^:=\s]+)\s*[:=]\s*(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).strip()
+    return out
+
+
+@router.get("/api/admin/mcp")
+async def mcp_list():
+    return [_mcp_public(s) for s in _load("mcp_servers.json", [])]
+
+
+@router.post("/api/admin/mcp")
+async def mcp_upsert(request: Request):
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,40}", name):
+        return JSONResponse({"error": "name: letters, digits, - or _ (max 41)"}, status_code=400)
+    transport = body.get("transport", "http")
+    with _lock:
+        items = _load("mcp_servers.json", [])
+        old = next((s for s in items if s["name"] == name), {})
+        entry = {"name": name, "transport": transport, "enabled": bool(body.get("enabled", True)),
+                 "grants": [str(g) for g in body.get("grants", [])], "updated": _now()}
+        if transport == "stdio":
+            cmd = str(body.get("command", "")).strip()
+            if not cmd:
+                return JSONResponse({"error": "command is required for a stdio server"}, status_code=400)
+            entry.update(command=cmd, args=[str(a) for a in body.get("args", [])])
+            env = _kv(body.get("env"))
+            entry["env"] = {k: (v or (old.get("env") or {}).get(k, "")) for k, v in env.items()}
+        elif transport == "http":
+            url = str(body.get("url", "")).strip()
+            if not re.match(r"https?://", url):
+                return JSONResponse({"error": "url must start with http:// or https://"}, status_code=400)
+            entry["url"] = url
+            hdr = _kv(body.get("headers"))
+            entry["headers"] = {k: (v or (old.get("headers") or {}).get(k, "")) for k, v in hdr.items()}
+        else:
+            return JSONResponse({"error": "transport must be http or stdio"}, status_code=400)
+        items = [s for s in items if s["name"] != name] + [entry]
+        _save("mcp_servers.json", items)
+    import mcp_hub
+    mcp_hub._cache.pop(name, None)
+    return await mcp_list()
+
+
+@router.delete("/api/admin/mcp/{name}")
+async def mcp_delete(name: str):
+    with _lock:
+        _save("mcp_servers.json", [s for s in _load("mcp_servers.json", []) if s["name"] != name])
+    return await mcp_list()
+
+
+@router.post("/api/admin/mcp/{name}/test")
+async def mcp_test(name: str):
+    import mcp_hub
+    srv = next((s for s in _load("mcp_servers.json", []) if s["name"] == name), None)
+    if not srv:
+        return JSONResponse({"error": "no such server"}, status_code=404)
+    try:
+        tools = await asyncio.to_thread(mcp_hub.list_tools, srv, True)
+    except BaseException as exc:  # ExceptionGroup from the client's task group
+        detail = getattr(exc, "exceptions", None)
+        msg = str(detail[0]) if detail else str(exc)
+        return JSONResponse({"error": f"could not connect: {msg[:300] or type(exc).__name__}"}, status_code=502)
+    return {"tools": [t["name"] for t in tools]}
 
 
 # ---------------------------------------------------------------- IRC

@@ -11,6 +11,7 @@
         { id: 'connections', label: 'Connections', render: renderConnections },
         { id: 'apikeys', label: 'API keys', render: renderApiKeys },
         { id: 'secrets', label: 'Secrets', render: renderSecrets },
+        { id: 'mcp', label: 'MCP servers', render: renderMcp },
         { id: 'irc', label: 'IRC', render: renderIrc },
     ];
     let current = 'general';
@@ -220,6 +221,87 @@
                 } }))])));
         panel.append(el('p', { class: 'settings-intro', text:
             'Limit: all agents run as the same Linux user on this server. Claude Code agents are blocked from reading AgentHub\'s data folder with their file tools, but an agent with Full access could still find a secret through the shell. Scope tokens narrowly (e.g. a fine-grained GitHub token for one repo).' }));
+    }
+
+    // ------------------------------------------------------------ MCP servers
+    async function renderMcp(panel, editing) {
+        heading(panel, 'MCP servers',
+            'Tool servers for your agents. Add one, tick the agents that may use it. API agents (Qwen, OpenRouter, ...) get its tools through AgentHub; Claude Code agents get it in their MCP config. Antigravity keeps its own global MCP settings.');
+        const [servers, agents] = await Promise.all([api('GET', '/api/admin/mcp'), api('GET', '/api/managed-agents')]);
+        const e = editing || { transport: 'http', enabled: true };
+        const name = el('input', { value: e.name || '', placeholder: 'e.g. netlab', readonly: !!e.name });
+        const transport = el('select');
+        transport.append(el('option', { value: 'http', text: 'HTTP (URL)' }), el('option', { value: 'stdio', text: 'Local command (stdio)' }));
+        transport.value = e.transport || 'http';
+        const url = el('input', { value: e.url || '', placeholder: 'http://192.168.1.50:8097/mcp' });
+        const headers = el('textarea', { rows: 2, placeholder: (e.header_names || []).length
+            ? (e.header_names.map(h => h + ':  (stored; leave the value blank to keep it)').join('\n'))
+            : 'Authorization: Bearer ...  (one per line, optional)' });
+        headers.value = (e.header_names || []).map(h => h + ': ').join('\n');
+        const command = el('input', { value: e.command || '', placeholder: 'npx' });
+        const args = el('input', { value: (e.args || []).join(' '), placeholder: '-y @modelcontextprotocol/server-filesystem /data/projects' });
+        const env = el('textarea', { rows: 2, placeholder: 'KEY=value (one per line, optional)' });
+        env.value = (e.env_names || []).map(k => k + '=').join('\n');
+        const httpBox = el('div', { class: 'agents-group' },
+            el('label', { class: 'agents-field' }, el('span', { text: 'URL' }), url),
+            el('label', { class: 'agents-field' }, el('span', { text: 'Headers (values are write-only)' }), headers));
+        const stdioBox = el('div', { class: 'agents-group' },
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Command' }), command),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Arguments (space-separated)' }), args)),
+            el('label', { class: 'agents-field' }, el('span', { text: 'Environment (values are write-only)' }), env));
+        const sync = () => { httpBox.hidden = transport.value !== 'http'; stdioBox.hidden = transport.value !== 'stdio'; };
+        transport.addEventListener('change', sync);
+        sync();
+        const grants = new Set(e.grants || []);
+        const boxes = agents.filter(a => a.kind !== 'agy').map(a => {
+            const cb = el('input', { type: 'checkbox', value: a.name, checked: grants.has(a.name) });
+            return { cb, label: el('label', { class: 'agents-toggle' }, cb, el('span', { text: '@' + a.name })) };
+        });
+        const form = el('form', { class: 'agents-form settings-secret-box' },
+            el('strong', { text: e.name ? `Edit ${e.name}` : 'Add an MCP server' }),
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Type' }), transport)),
+            httpBox, stdioBox,
+            el('div', { class: 'agents-field' }, el('span', { text: 'Agents allowed to use it' }),
+                boxes.length ? el('div', { class: 'agents-inline' }, ...boxes.map(b => b.label))
+                             : el('small', { text: 'No Claude Code or API agents yet (Settings > Agents).' })),
+            el('div', { class: 'agents-actions' },
+                e.name ? el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('mcp') }) : null,
+                el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save server' })));
+        form.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            try {
+                await api('POST', '/api/admin/mcp', { name: name.value.trim(), transport: transport.value,
+                    url: url.value.trim(), headers: headers.value, command: command.value.trim(),
+                    args: args.value.trim() ? args.value.trim().split(/\s+/) : [], env: env.value,
+                    grants: boxes.filter(b => b.cb.checked).map(b => b.cb.value), enabled: true });
+                show('mcp');
+            } catch (err) { alert(err.message); }
+        });
+        panel.append(form);
+        if (servers.length) panel.append(table(['Name', 'Where', 'Allowed agents', 'Tools', ''], servers.map(x => {
+            const tools = el('span', { text: '—' });
+            return [x.name, x.transport === 'stdio' ? `${x.command} ${(x.args || []).join(' ')}` : x.url,
+                (x.grants || []).map(g => '@' + g).join(', ') || 'nobody', tools,
+                el('div', { class: 'agents-inline' },
+                    el('button', { class: 'agents-btn', text: 'Test', onclick: async () => {
+                        tools.textContent = 'connecting…';
+                        try {
+                            const r = await api('POST', `/api/admin/mcp/${encodeURIComponent(x.name)}/test`);
+                            tools.textContent = `${r.tools.length}: ${r.tools.slice(0, 8).join(', ')}${r.tools.length > 8 ? ', …' : ''}`;
+                        } catch (err) { tools.textContent = err.message; }
+                    } }),
+                    el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
+                        const p = document.getElementById('settings-panel'); p.textContent = ''; renderMcp(p, x);
+                    } }),
+                    el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
+                        if (!confirm(`Delete MCP server "${x.name}"?`)) return;
+                        await api('DELETE', `/api/admin/mcp/${encodeURIComponent(x.name)}`);
+                        show('mcp');
+                    } }))];
+        })));
     }
 
     // ------------------------------------------------------------ IRC

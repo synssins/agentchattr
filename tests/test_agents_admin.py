@@ -431,3 +431,43 @@ class ToolLoopTest(unittest.TestCase):
         cmd = agent_runner.cli_command({"kind": "claude", "permissions": "read", "allowed_commands": ["slop-chop"]},
                                        "hi", None, "S")
         self.assertIn("Bash(slop-chop:*)", cmd)
+
+
+class McpTest(JoinTest):
+    def add_server(self, grants):
+        return self.c.post("/api/admin/mcp", json={
+            "name": "echo", "transport": "stdio", "command": sys.executable,
+            "args": [str(Path(__file__).parent / "mcp_echo_server.py")], "env": "TOKEN=s3cret",
+            "grants": grants})
+
+    def test_crud_masks_values_and_test_lists_tools(self):
+        r = self.add_server(["qwen"])
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("s3cret", r.text)
+        self.assertEqual(r.json()[0]["env_names"], ["TOKEN"])
+        self.c.post("/api/admin/mcp", json={"name": "echo", "transport": "stdio", "command": sys.executable,
+                                            "args": [str(Path(__file__).parent / "mcp_echo_server.py")],
+                                            "env": "TOKEN=", "grants": ["qwen"]})
+        import mcp_hub
+        self.assertEqual(mcp_hub.servers()[0]["env"], {"TOKEN": "s3cret"})  # blank value kept
+        self.assertEqual(self.c.post("/api/admin/mcp/echo/test").json(), {"tools": ["shout"]})
+        bad = self.c.post("/api/admin/mcp", json={"name": "bad", "transport": "http", "url": "http://127.0.0.1:9/mcp"})
+        self.assertEqual(bad.status_code, 200)
+        self.assertEqual(self.c.post("/api/admin/mcp/bad/test").status_code, 502)
+
+    def test_api_agent_and_claude_get_granted_servers_only(self):
+        import mcp_hub
+        self.add_server(["qwen"])
+        specs, names = mcp_hub.tool_specs_for("qwen")
+        self.assertEqual([s["function"]["name"] for s in specs], ["mcp__echo__shout"])
+        self.assertEqual(mcp_hub.call_tool(names["mcp__echo__shout"][0], "shout", {"text": "hi"}), "HI")
+        self.assertEqual(mcp_hub.tool_specs_for("other")[0], [])
+        path, rules = mcp_hub.claude_config("qwen", self.tmp.name)
+        self.assertEqual(rules, ["mcp__echo"])
+        self.assertIn("echo", json.loads(Path(path).read_text())["mcpServers"])
+        self.assertEqual(oct(Path(path).stat().st_mode & 0o777), "0o600")
+        cmd = agent_runner.cli_command({"kind": "claude", "permissions": "read"}, "hi", None, "S", mcp=(path, rules))
+        self.assertIn("--mcp-config", cmd)
+        self.assertIn("mcp__echo", cmd)
+        admin_api.rename_grants("qwen", "marcus")
+        self.assertEqual(len(mcp_hub.tool_specs_for("marcus")[0]), 1)
