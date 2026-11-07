@@ -444,6 +444,10 @@ class Runner:
         history = [m for m in self.m.hub.store.get_recent(n, channel=channel)
                    if m["id"] >= start  # spawned/fresh instance: conversation starts there
                    and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"]
+        if history and history[-1]["sender"] == self.name:
+            # Nothing new since our own reply (a trigger we already answered). Gemini also
+            # rejects a request that ends with the model's turn (HTTP 400).
+            return NO_REPLY
         inline = set()  # ids of the newest messages whose images go inline
         for m in reversed(history):
             if len(inline) >= MAX_IMAGES:

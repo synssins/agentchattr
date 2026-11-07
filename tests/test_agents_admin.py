@@ -465,6 +465,24 @@ class ToolLoopTest(unittest.TestCase):
         self.assertIn("There is no separate grep", seen[1][-1]["content"])
         self.assertEqual(seen[2][-2]["reasoning_details"], [{"sig": "x"}])
 
+    def test_no_call_when_own_reply_is_last(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "walt", "kind": "api", "base_url": "http://x/v1"})
+        store.add("doug", "@walt review")
+        store.add("walt", "reviewed")
+        orig = agent_runner.call_api_message
+        agent_runner.call_api_message = lambda *a, **k: self.fail("should not call the model")
+        try:
+            self.assertEqual(agent_runner.Runner(mgr, "walt")._api_turn("general"), agent_runner.NO_REPLY)
+        finally:
+            agent_runner.call_api_message = orig
+
     def test_http_error_body_is_in_the_message(self):
         import io
         import urllib.error
