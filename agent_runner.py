@@ -44,6 +44,8 @@ PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
 RESUME_NOTE = ("(Your previous turn here was cut off by a server restart before you could post. "
                "Check what you already did, such as files changed, commands run or commits, then "
                "carry on from there instead of starting over.)")
+ATTACH_RE = re.compile(r"\[attach:\s*([^\]\n]+)\]", re.I)
+MAX_ATTACH_BYTES = 25 * 1024 * 1024
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
@@ -58,7 +60,9 @@ ROOM_PROMPT = (
     "You are {name} in AgentHub, a shared chat room with other AI agents and one human "
     "(the owner). Messages addressed to you arrive as a transcript. Reply with only the text "
     "to post in the room: no name prefix, concise unless asked for detail. Mention another "
-    "agent with @name to hand off or ask them; use @all to ask everyone. If you have nothing "
+    "agent with @name to hand off or ask them; use @all to ask everyone. To show the owner an "
+    "image or file (screenshot, render, document), put [attach: /absolute/path] in your reply; "
+    "it is posted as an attachment they can open. If you have nothing "
     "useful to add, reply exactly: " + NO_REPLY
 )
 
@@ -284,6 +288,30 @@ class Runner:
                  f"{a.get('name', '')}: {path}]" for path, a in self._files(m)]
         return "\n".join([m.get("text", "")] + extra).strip()
 
+    def _attachments(self, paths: list[str]) -> tuple[list[dict], list[str]]:
+        """Copy files an agent attached into uploads/ -> (attachment dicts, problems)."""
+        import mimetypes
+        import shutil
+        import uuid
+        updir = Path(getattr(self.m.hub.store, "upload_dir", "uploads"))
+        cwd = Path(os.path.expanduser(self.spec.get("cwd") or "~"))
+        out, problems = [], []
+        for raw in paths:
+            src = (cwd / os.path.expanduser(raw.strip().strip("`'\""))).resolve()
+            if not src.is_file():
+                problems.append(f"(couldn't attach {raw.strip()}: file not found)")
+                continue
+            if src.stat().st_size > MAX_ATTACH_BYTES:
+                problems.append(f"(couldn't attach {src.name}: larger than 25 MB)")
+                continue
+            updir.mkdir(parents=True, exist_ok=True)
+            name = f"{uuid.uuid4().hex}{src.suffix.lower()}"
+            shutil.copyfile(src, updir / name)
+            mt = mimetypes.guess_type(src.name)[0] or "application/octet-stream"
+            out.append({"name": src.name, "url": f"/uploads/{name}", "size": src.stat().st_size,
+                        "media_type": mt, "kind": "image" if mt.startswith("image/") else "file"})
+        return out, problems
+
     def _addressed(self, channel: str) -> bool:
         """Was the latest message from someone else aimed at this agent by name?
         (@all reaches everyone, but each agent may judge it isn't theirs to answer.)"""
@@ -374,13 +402,18 @@ class Runner:
                 reply = PERSONA_RE.sub("", reply).strip()
                 hub.store.add("system", f"{self.name} updated its persona.", msg_type="system",
                               channel=channel)
+            attachments, problems = self._attachments(ATTACH_RE.findall(reply))
+            reply = ATTACH_RE.sub("", reply).strip()
+            if problems:
+                reply = (reply + "\n\n" + "\n".join(problems)).strip()
             renames = RENAME_RE.findall(reply)
             reply = RENAME_RE.sub("", reply).strip()
             for prefix in (f"{self.name}: ", f"{self.name}:"):
                 if reply.startswith(prefix):
                     reply = reply[len(prefix):].strip()
-            if reply and reply != NO_REPLY:
-                hub.store.add(self.name, reply, channel=channel)
+            if (reply and reply != NO_REPLY) or attachments:
+                hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
+                              attachments=attachments)
             else:
                 log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
             if renames:  # after posting, so the reply is re-attributed with the rest

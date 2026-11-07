@@ -346,6 +346,13 @@ async function openPath(path) {
 function addCodeCopyButtons(container) {
     const blocks = container.querySelectorAll('pre');
     for (const pre of blocks) {
+        // Syntax colouring (highlight.js): the ```lang tag wins, otherwise a best guess
+        const code = pre.querySelector('code');
+        if (code && window.hljs && !code.dataset.highlighted) {
+            try { hljs.highlightElement(code); } catch (e) { /* plain text is fine */ }
+            const lang = [...code.classList].find(c => c.startsWith('language-'));
+            if (lang && lang !== 'language-undefined') pre.dataset.lang = lang.slice(9);
+        }
         if (pre.querySelector('.code-copy-btn')) continue;
         const btn = document.createElement('button');
         btn.className = 'code-copy-btn';

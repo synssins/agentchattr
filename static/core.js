@@ -57,3 +57,25 @@ document.addEventListener('click', (e) => {
     e.preventDefault();
     window.open(a.href, '_blank', 'noopener,noreferrer');
 }, true);
+
+
+// Phones and tablets: channels and members slide in as drawers (see style.css).
+function toggleDrawer(which) {
+    const body = document.body;
+    for (const name of ['channels', 'members']) {
+        const open = name === which && !body.classList.contains(`drawer-${name}`);
+        body.classList.toggle(`drawer-${name}`, open);
+        document.getElementById(`nav-${name}`)?.setAttribute('aria-expanded', String(open));
+    }
+}
+window.toggleDrawer = toggleDrawer;
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleDrawer(null); });
+// Picking a channel or a member closes the drawer
+// (tapping the channel you're already in opens its rename/delete controls, so keep the drawer then)
+document.addEventListener('click', (e) => {
+    if (!document.body.matches('.drawer-channels, .drawer-members')) return;
+    const row = e.target.closest('#channel-sidebar-list [data-channel]');
+    if ((row && !row.classList.contains('active')) || e.target.closest('#members-list .member, .members-picker-item')) {
+        setTimeout(() => toggleDrawer(null), 0);
+    }
+}, true);

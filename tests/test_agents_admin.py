@@ -576,3 +576,27 @@ class ResumeAfterRestartTest(unittest.TestCase):
         self.assertIn("Picked it back up.", texts)
         self.assertTrue(any("resuming it" in t for t in texts))
         self.assertNotIn("inflight", mgr2.state["lazlo"])   # cleared once the turn finished
+
+
+class AgentAttachTest(unittest.TestCase):
+    def test_attach_tag_posts_file_as_attachment(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        store.upload_dir = Path(tmp.name) / "uploads"
+        (Path(tmp.name) / "shot.png").write_bytes(b"\\x89PNG fake")
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr._apply = lambda name: None
+        mgr.upsert({"name": "doug", "kind": "api", "base_url": "http://x/v1", "cwd": tmp.name})
+        r = agent_runner.Runner(mgr, "doug")
+        r._api_turn = lambda ch: "Here's the render.\n[attach: shot.png]\n[attach: /nope/missing.png]"
+        r._turn("general")
+        m = [x for x in store.get_recent(5) if x["sender"] == "doug"][-1]
+        self.assertEqual(m["attachments"][0]["kind"], "image")
+        self.assertEqual(m["attachments"][0]["name"], "shot.png")
+        self.assertTrue((store.upload_dir / Path(m["attachments"][0]["url"]).name).exists())
+        self.assertIn("Here's the render.", m["text"])
+        self.assertIn("couldn't attach /nope/missing.png", m["text"])
+        self.assertNotIn("[attach:", m["text"])

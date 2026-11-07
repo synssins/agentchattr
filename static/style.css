@@ -4853,3 +4853,155 @@ a.file-attachment:hover { border-color: var(--accent); }
 .members-picker-item:hover, .members-picker-item:focus-visible { background: var(--accent-soft); }
 
 .status-pill[hidden] { display: none; }  /* agent not in the channel being viewed */
+
+
+/* ================= Phones and tablets (portrait and landscape) ================= */
+.mobile-nav-btn {
+    display: none;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    color: var(--text);
+    cursor: pointer;
+}
+#drawer-backdrop { display: none; }
+
+@media (max-width: 900px) {
+    html, body { overflow-x: hidden; }
+    .mobile-nav-btn { display: inline-flex; }
+    header { gap: 8px; padding-left: 10px; padding-right: 10px; }
+    .header-left { min-width: 0; gap: 8px; }
+    .header-left .discord-pill, .header-left .subtitle { display: none; }
+    header h1 { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .header-right { min-width: 0; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+    .header-right::-webkit-scrollbar { display: none; }
+    #agent-status { display: none; }   /* the members drawer shows who is online */
+
+    /* Channels: drawer from the left */
+    #channel-sidebar {
+        position: fixed;
+        top: 0; bottom: 0; left: 0;
+        width: min(300px, 85vw) !important;
+        max-width: none;
+        z-index: 60;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+    }
+    body.drawer-channels #channel-sidebar { transform: none; }
+    .channel-sidebar-grip { display: none; }
+
+    /* Members: drawer from the right */
+    #members-panel {
+        display: block;
+        position: fixed;
+        top: 0; bottom: 0; right: 0;
+        width: min(300px, 85vw);
+        z-index: 60;
+        transform: translateX(100%);
+        transition: transform 0.2s ease;
+        box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+    }
+    body.drawer-members #members-panel { transform: none; }
+
+    body.drawer-channels #drawer-backdrop, body.drawer-members #drawer-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 55;
+        background: var(--bg-overlay);
+    }
+
+    /* Jobs, rules and pins open full width over the chat */
+    #jobs-panel, #rules-panel {
+        position: fixed;
+        top: 0; bottom: 0; right: 0;
+        width: 100vw !important;
+        max-width: none;
+        z-index: 58;
+    }
+    .jobs-grip, .rules-grip { display: none; }
+
+    .chat-bubble { max-width: 100%; }
+    .message { padding-left: 6px; padding-right: 6px; }
+    #messages img, .chat-bubble img { max-width: 100%; height: auto; }
+    .chat-bubble pre { max-width: 100%; overflow-x: auto; }
+    .chat-bubble table { display: block; max-width: 100%; overflow-x: auto; }
+}
+
+@media (max-width: 700px) {
+    .header-logo { width: 26px; height: 26px; }
+    #sender-label, .input-hint { display: none; }
+    #input-row { gap: 6px; }
+    #session-launch-btn { display: none; }      /* sessions: still reachable via /commands */
+    #input { min-width: 0; font-size: 16px; }   /* 16px stops iOS zooming on focus */
+    #send { padding-left: 14px; padding-right: 14px; }
+    #mention-toggles-row #clear-chat-btn { display: none; }
+    .settings-dialog { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
+    .settings-panel { padding: 16px; }
+    .settings-table { display: block; overflow-x: auto; }
+    .agents-row { flex-wrap: wrap; }
+    .agents-info { flex-basis: 60%; }
+}
+
+/* Phone in landscape: little height, so keep header and composer short */
+@media (max-height: 500px) and (orientation: landscape) {
+    header { padding-top: 4px; padding-bottom: 4px; }
+    .header-logo { width: 22px; height: 22px; }
+    header h1 { font-size: 15px; }
+    #mention-toggles-row { display: none; }
+    .input-hint { display: none; }
+    #input { max-height: 30vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #channel-sidebar, #members-panel { transition: none; }
+}
+
+
+/* --- Code blocks: a panel per block, language label, highlight.js colours --- */
+.msg-text pre, .job-msg-text pre {
+    position: relative;
+    background: #0d1117;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.msg-text pre[data-lang], .job-msg-text pre[data-lang] { padding-top: 28px; }
+.msg-text pre[data-lang]::before, .job-msg-text pre[data-lang]::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 6px;
+    left: 12px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+.msg-text pre code.hljs, .job-msg-text pre code.hljs {
+    background: transparent;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+@media (hover: none) { .code-copy-btn { opacity: 1; } }   /* no hover on touch screens */
+
+/* --- Tables --- */
+.msg-text table, .job-msg-text table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 13px;
+}
+.msg-text th, .msg-text td, .job-msg-text th, .job-msg-text td {
+    border: 1px solid var(--border-strong);
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+.msg-text th, .job-msg-text th { background: var(--bg-elevated); color: var(--text-on-accent); }
+.msg-text tr:nth-child(even) td { background: var(--bg-subtle); }
