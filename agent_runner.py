@@ -118,7 +118,8 @@ def call_api(spec: dict, system: str, messages: list[dict]) -> str:
     return call_api_message(spec, system, messages).get("content") or ""
 
 
-def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None) -> dict:
+def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None,
+                     tool_choice: str | None = None) -> dict:
     """One chat call -> the assistant message ({"content", "tool_calls"?}).
     Tools are passed for OpenAI-compatible providers only."""
     base = spec.get("base_url", "").rstrip("/")
@@ -136,6 +137,8 @@ def call_api_message(spec: dict, system: str, messages: list[dict], tools: list 
                "messages": [{"role": "system", "content": system}] + messages}
     if tools:
         payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
     if spec.get("temperature") is not None:
         payload["temperature"] = float(spec["temperature"])
     data = _post_json(f"{base}/chat/completions", payload,
@@ -500,9 +503,10 @@ class Runner:
             steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
         except (TypeError, ValueError):
             steps = MAX_TOOL_STEPS
-        for _ in range(steps):
-            try:
-                reply = call_api_message(spec, system, msgs, tools)
+        for step in range(steps):
+            try:  # "require_tool": the first step must call a tool (read before answering)
+                reply = call_api_message(spec, system, msgs, tools,
+                                         "required" if step == 0 and spec.get("require_tool") else None)
             except urllib.error.HTTPError as exc:
                 # A 400 with inline images: let the caller retry without images first
                 if images_inline or not tools or exc.code not in (400, 422):

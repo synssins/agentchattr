@@ -215,6 +215,8 @@
             placeholder: 'e.g. slop-chop, git (blank: none)' });
         const timeout = el('input', { type: 'number', min: '10', max: '7200', value: a.timeout || '', placeholder: '600' });
         const steps = el('input', { type: 'number', min: '1', max: '200', value: a.max_tool_steps || '', placeholder: '40' });
+        const requireTool = el('input', { type: 'checkbox' });
+        requireTool.checked = !!a.require_tool;
         const permWarn = el('small', { class: 'agents-warn',
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
@@ -223,7 +225,8 @@
             field('API key', apiKey, 'Stored on the server only, never shown again.'),
             el('div', { class: 'agents-inline' }, field('Model', model), fetchBtn), models,
             el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx),
-                field('Timeout (seconds)', timeout), field('Max tool steps per turn', steps)));
+                field('Timeout (seconds)', timeout), field('Max tool steps per turn', steps)),
+            field('Must use a tool first', requireTool, 'Every turn starts with a tool call (e.g. read_file), so the agent can\'t answer from memory.'));
         const cliBox = el('div', { class: 'agents-group' }, field('Model', cliModel));
         const toolsBox = el('div', { class: 'agents-group' },
             field('Working directory', cwd, 'Where the agent reads, edits and runs things.'),
@@ -271,7 +274,7 @@
                     api_key: apiKey.value, model: model.value.trim(),
                     temperature: temp.value === '' ? null : Number(temp.value),
                     context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null,
-                    max_tool_steps: Number(steps.value) || null });
+                    max_tool_steps: Number(steps.value) || null, require_tool: requireTool.checked });
             } else {
                 Object.assign(spec, { model: cliModel.value.trim() });
             }
