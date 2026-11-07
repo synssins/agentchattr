@@ -37,11 +37,15 @@ NO_REPLY = "(no reply)"
 CLI_TIMEOUT = 30 * 60
 
 PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
+RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
     "others. It follows you across projects and context resets. To set or rewrite it, put the "
     "full new text in your reply between [persona] and [/persona] (under 1200 characters). "
-    "That block is saved and removed from the posted message.")
+    "That block is saved and removed from the posted message. To change your @handle / screen "
+    "name (like a Discord or IRC nick, e.g. ScroogeMcDuck19), add [rename]NewName[/rename]: "
+    "letters, digits, - or _, max 32, not already taken. It is shown as you type it; "
+    "@mentions ignore case.")
 
 ROOM_PROMPT = (
     "You are {name} in AgentHub, a shared chat room with other AI agents and one human "
@@ -263,11 +267,16 @@ class Runner:
                 reply = PERSONA_RE.sub("", reply).strip()
                 hub.store.add("system", f"{self.name} updated its persona.", msg_type="system",
                               channel=channel)
+            renames = RENAME_RE.findall(reply)
+            reply = RENAME_RE.sub("", reply).strip()
             for prefix in (f"{self.name}: ", f"{self.name}:"):
                 if reply.startswith(prefix):
                     reply = reply[len(prefix):].strip()
             if reply and reply != NO_REPLY:
                 hub.store.add(self.name, reply, channel=channel)
+            if renames:  # after posting, so the reply is re-attributed with the rest
+                note = self.m.rename(self.name, renames[-1].strip())
+                hub.store.add("system", note, msg_type="system", channel=channel)
         except Exception as exc:
             log.exception("turn failed for %s", self.name)
             hub.store.add("system", f"{self.name} failed: {str(exc)[:200]}", msg_type="system",
@@ -357,6 +366,12 @@ class AgentManager:
         with self.lock:
             self._write(self.state_path, self.state)
 
+    def _name_taken(self, name: str) -> bool:
+        """In use as an agent, or as a registry family that still has members (a renamed
+        agent keeps its original family; reusing that name would renumber it)."""
+        reg = self.hub.registry
+        return bool(name in self.specs or reg.get_instance(name) or reg.get_instances_for(name))
+
     def channel_lock(self, channel: str) -> threading.Lock:
         with self.lock:
             return self._channel_locks.setdefault(channel, threading.Lock())
@@ -402,8 +417,7 @@ class AgentManager:
             return "channels must be a list of channel names"
         if spec.get("permissions", "read") not in PERMISSIONS:
             return f"permissions must be one of {PERMISSIONS}"
-        live = self.hub.registry.get_instance(spec["name"]) if self.hub.registry else None
-        if live and spec["name"] not in self.runners:
+        if spec["name"] not in self.specs and self._name_taken(spec["name"]):
             return f"an agent named '{spec['name']}' is already connected; pick another name"
         if spec["kind"] == "api" and not spec.get("base_url"):
             return "base_url is required for API agents"
@@ -441,7 +455,7 @@ class AgentManager:
                     + (", ".join(sorted(self.specs)) or "none; add one in Settings > Agents"))
         if not name:
             n = 2
-            while f"{src['name']}-{n}" in self.specs or self.hub.registry.get_instance(f"{src['name']}-{n}"):
+            while self._name_taken(f"{src['name']}-{n}"):
                 n += 1
             name = f"{src['name']}-{n}"
         # persona and memory are per instance: the new one defines its own
@@ -469,6 +483,52 @@ class AgentManager:
             self.save()
         self.save_state()
         return f"@{name} starts with a fresh context (its persona is kept)."
+
+    def rename(self, old: str, wanted: str) -> str:
+        """Change an agent's @handle everywhere; persona, memory and channels move with it."""
+        old = old.lstrip("@").lower()
+        label = wanted.strip().lstrip("@")[:40]
+        new = re.sub(r"[^a-z0-9_-]", "", label.lower().replace(" ", "-"))[:32]
+        import mcp_bridge
+        if old not in self.specs:
+            return f"No agent '{old}' runs on this server."
+        if not new or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", new):
+            return f"'{wanted}' can't be a handle (lowercase letters, digits, - or _)."
+        if new == old:
+            return f"@{old} already has that handle."
+        taken = (self._name_taken(new)
+                 or new in {"user", "system", "all", "both", "everyone", "here", "me"}
+                 or new == str(getattr(self.hub, "room_settings", {}).get("username", "")).lower())
+        if taken:
+            return f"@{new} is taken; @{old} keeps its handle."
+        runner = self.runners.pop(old, None)
+        if runner:
+            runner.stop.set()  # keep the registry instance: it is renamed below
+        mcp_bridge.migrate_identity(old, new)
+        result = self.hub.registry.rename(old, new, label)
+        if isinstance(result, str) and self.hub.registry.get_instance(old):
+            if runner:
+                self.runners[old] = Runner(self, old)
+                self.runners[old].start()
+            return f"Rename failed: {result}"
+        self.hub.store.rename_sender(old, new)
+        with self.lock:
+            spec = self.specs.pop(old)
+            spec.update(name=new, label=label)
+            self.specs[new] = spec
+            if old in self.state:
+                self.state[new] = self.state.pop(old)
+            for names in self.members.values():
+                if old in names:
+                    names[names.index(old)] = new
+            self.save()
+            self._write(self.members_path, self.members)
+        self.save_state()
+        (Path(self.data_dir) / f"{old}_queue.jsonl").unlink(missing_ok=True)
+        if spec.get("enabled", True):
+            self.runners[new] = Runner(self, new)
+            self.runners[new].start()
+        return f"@{old} is now @{new} ({label})."
 
     def despawn(self, name: str) -> str:
         name = name.lstrip("@").lower()

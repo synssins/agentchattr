@@ -223,3 +223,37 @@ class TurnTakingTest(unittest.TestCase):
         [t.join() for t in threads]
         first, second = sorted(seen, key=lambda n: len(seen[n]))
         self.assertIn(f"I am {first}", seen[second])  # the second saw the first's reply
+
+
+class RenameTest(unittest.TestCase):
+    def test_agent_renames_itself_everywhere(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store,
+                                    room_settings={"username": "alice"},
+                                    rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
+        mgr = agent_runner.AgentManager(hub, tmp.name)
+        mgr.upsert({"name": "agy-2", "kind": "api", "base_url": "http://x/v1", "persona": "P",
+                    "channels": ["sonorium"]})
+        mgr.upsert({"name": "claudecode-2", "kind": "api", "base_url": "http://x/v1"})
+        try:
+            r = mgr.runners["agy-2"]
+            r._api_turn = lambda ch: "Call me Marcus.\n[rename]Marcus[/rename]"
+            r._turn("sonorium")
+            self.assertIn("marcus", mgr.specs)
+            self.assertNotIn("agy-2", mgr.specs)
+            self.assertEqual((mgr.specs["marcus"]["label"], mgr.specs["marcus"]["persona"]), ("Marcus", "P"))
+            self.assertTrue(mgr.in_channel("marcus", "sonorium"))
+            self.assertTrue(hub.registry.get_instance("marcus"))
+            self.assertIsNone(hub.registry.get_instance("agy-2"))
+            posted = [m for m in store.get_recent(5) if m["type"] == "chat"]
+            self.assertEqual((posted[-1]["sender"], posted[-1]["text"]), ("marcus", "Call me Marcus."))
+            self.assertIn("taken", mgr.rename("claudecode-2", "marcus"))   # no duplicates
+            self.assertIn("taken", mgr.rename("claudecode-2", "alice"))
+            mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1", "enabled": False})
+            self.assertIn("Spawned @agy-3", mgr.spawn("agy", "general"))     # agy-2 family still has marcus
+            self.assertTrue(hub.registry.get_instance("marcus"))
+        finally:
+            for x in list(mgr.runners.values()):
+                x.stop.set()

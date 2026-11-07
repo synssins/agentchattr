@@ -1219,6 +1219,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         store.clear(channel=channel)
                         await broadcast_clear(channel=channel)
                         continue
+                    if cmd == "/rename":
+                        note = (await asyncio.to_thread(agent_manager.rename, cmd_parts[1], " ".join(cmd_parts[2:]))
+                                if agent_manager and len(cmd_parts) > 2 else "Usage: /rename <agent> <new name>")
+                        store.add("system", note, msg_type="system", channel=channel)
+                        await broadcast_status()
+                        continue
                     if cmd == "/fresh":
                         note = (await asyncio.to_thread(agent_manager.fresh, cmd_parts[1])
                                 if agent_manager and len(cmd_parts) > 1 else "Usage: /fresh <agent>")
