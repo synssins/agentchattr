@@ -43,3 +43,17 @@ const Hub = (() => {
 // Make Hub available globally during the transition period.
 // Once all modules use ES imports, this can be removed.
 window.Hub = Hub;
+
+// Links in chat (markdown, auto-linked URLs, attachments) always open in a new
+// tab, never replacing the room. In-page links (href="#...") and javascript
+// handlers are left alone.
+document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || e.defaultPrevented) return;
+    const href = a.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) return;
+    if (a.hasAttribute('download')) return;  // saving a file is not navigation
+    if (a.hasAttribute('onclick')) return;   // app-handled links (attachment download, open path)
+    e.preventDefault();
+    window.open(a.href, '_blank', 'noopener,noreferrer');
+}, true);
