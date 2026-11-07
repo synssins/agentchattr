@@ -5,12 +5,13 @@
 (function () {
     const PROVIDERS = {
         strata:     { label: 'Strata (local)',  base_url: 'http://127.0.0.1:8090/v1', api_format: 'openai' },
-        openrouter: { label: 'OpenRouter',      base_url: 'https://openrouter.ai/api/v1', api_format: 'openai' },
+        openrouter: { label: 'OpenRouter',      base_url: 'https://openrouter.ai/api/v1', api_format: 'openai',
+                      help: 'Paste a key from openrouter.ai/keys, then pick a model from the list (type to filter, e.g. "claude" or "free").' },
         gemini:     { label: 'Google Gemini',   base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', api_format: 'openai' },
         anthropic:  { label: 'Anthropic',       base_url: 'https://api.anthropic.com/v1', api_format: 'anthropic' },
         custom:     { label: 'Custom (OpenAI-compatible)', base_url: '', api_format: 'openai' },
     };
-    const KINDS = { api: 'LLM API', claude: 'Claude Code (CLI)', agy: 'Antigravity (CLI)' };
+    const KINDS = { api: 'LLM API (OpenRouter, Strata, Gemini, Anthropic, OpenAI-compatible)', claude: 'Claude Code (CLI)', agy: 'Antigravity (CLI)' };
     const PERMS = {
         read: 'Read-only',
         edit: 'Can edit files',
@@ -169,17 +170,23 @@
         const apiFormat = el('select');
         apiFormat.append(el('option', { value: 'openai', text: 'OpenAI-compatible' }), el('option', { value: 'anthropic', text: 'Anthropic' }));
         apiFormat.value = a.api_format || PROVIDERS[provider.value].api_format;
+        const providerHelp = el('small');
+        const showHelp = () => { providerHelp.textContent = PROVIDERS[provider.value].help || ''; };
         provider.addEventListener('change', () => {
             const p = PROVIDERS[provider.value];
             if (p.base_url) baseUrl.value = p.base_url;
             apiFormat.value = p.api_format;
+            showHelp();
+            if (p.base_url) loadModels(true);
         });
+        showHelp();
         const apiKey = el('input', { type: 'password', autocomplete: 'off',
             placeholder: a.has_api_key ? (a.duplicateOf ? `Blank = use @${a.duplicateOf}'s key` : 'Stored. Leave blank to keep it.') : 'API key (blank for local servers)' });
         const model = el('input', { list: 'agents-models', value: a.model || '', placeholder: 'Model id' });
         const models = el('datalist', { id: 'agents-models' });
         const fetchBtn = el('button', { type: 'button', class: 'agents-btn', text: 'Fetch models' });
-        fetchBtn.addEventListener('click', async () => {
+        // quiet: automatic load (provider picked or form opened), no alert or focus
+        async function loadModels(quiet) {
             fetchBtn.textContent = 'Fetching…';
             try {
                 const ids = await api('POST', '/api/managed-agents/models',
@@ -187,12 +194,14 @@
                 models.textContent = '';
                 ids.forEach(id => models.append(el('option', { value: id })));
                 fetchBtn.textContent = `${ids.length} models`;
-                model.focus();
+                if (!quiet) model.focus();
             } catch (e) {
                 fetchBtn.textContent = 'Fetch models';
-                alert(e.message);
+                if (!quiet) alert(e.message);
             }
-        });
+        }
+        fetchBtn.addEventListener('click', () => loadModels(false));
+        if (baseUrl.value && provider.value === 'openrouter') loadModels(true);  // public list, no key needed
         const temp = el('input', { type: 'number', step: '0.1', min: '0', max: '2', value: a.temperature ?? '', placeholder: 'default' });
         const ctx = el('input', { type: 'number', min: '1', max: '500', value: a.context_messages || 30 });
 
@@ -210,7 +219,7 @@
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
         const apiBox = el('div', { class: 'agents-group' },
-            field('Provider', provider), field('Base URL', baseUrl), field('API format', apiFormat),
+            (() => { const f = field('Provider', provider); f.append(providerHelp); return f; })(), field('Base URL', baseUrl), field('API format', apiFormat),
             field('API key', apiKey, 'Stored on the server only, never shown again.'),
             el('div', { class: 'agents-inline' }, field('Model', model), fetchBtn), models,
             el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx),
