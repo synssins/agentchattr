@@ -284,7 +284,7 @@ def _install_security_middleware(token: str, cfg: dict):
             # Allow registered agents to authenticate via Bearer token
             # for /api/messages and /api/send (no browser session needed).
             auth_header = request.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer ") and (path in ("/api/messages", "/api/send") or path.startswith("/api/rules/")):
+            if auth_header.lower().startswith("bearer ") and (path in ("/api/messages", "/api/send", "/api/upload") or path.startswith("/api/rules/")):
                 bearer = auth_header[7:].strip()
                 if _self.registry and _self.registry.resolve_token(bearer):
                     return await call_next(request)
@@ -1737,11 +1737,20 @@ async def api_send(request: Request):
     sender = inst["name"]
     body = await request.json()
     text = body.get("text", "").strip()
-    if not text:
-        return JSONResponse({"error": "text is required"}, status_code=400)
+    # Attachments are the objects /api/upload returned; only files that exist in the upload dir.
+    upload_dir = Path(config.get("images", {}).get("upload_dir", "./uploads"))
+    attachments = []
+    for a in body.get("attachments") or []:
+        url = a.get("url", "") if isinstance(a, dict) else ""
+        name = url.removeprefix("/uploads/")
+        if not url.startswith("/uploads/") or "/" in name or not (upload_dir / name).is_file():
+            return JSONResponse({"error": f"unknown attachment: {url or a!r}"}, status_code=400)
+        attachments.append({k: a[k] for k in ("name", "url", "size", "media_type", "kind") if k in a})
+    if not text and not attachments:
+        return JSONResponse({"error": "text or attachments required"}, status_code=400)
     channel = body.get("channel", "general")
 
-    msg = store.add(sender, text, channel=channel)
+    msg = store.add(sender, text, channel=channel, attachments=attachments or None)
     return JSONResponse(msg)
 
 

@@ -137,3 +137,51 @@ class FileAttachmentTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AgentSendAttachmentTests(unittest.TestCase):
+    """Agents upload with their Bearer token and attach the result to /api/send."""
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.uploads = root / 'uploads'
+        config = {'server': {'port': 8300}, 'images': {'upload_dir': str(self.uploads)},
+                  'attachments': {'max_size_mb': 1}}
+        self.store = MessageStore(str(root / 'log.jsonl'))
+
+        class Registry:
+            def resolve_token(self, token):
+                return {'name': 'bot'} if token == 'agent-token' else None
+
+        api = FastAPI()
+        api.add_api_route('/api/upload', app.upload_image, methods=['POST'])
+        api.add_api_route('/api/send', app.api_send, methods=['POST'])
+        for name, value in {'app': api, 'config': config, 'registry': Registry(), 'store': self.store,
+                            'session_token': 'session'}.items():
+            self.stack.enter_context(patch.object(app, name, value))
+        app._install_security_middleware('session', config)
+        self.client = self.stack.enter_context(TestClient(api))
+        self.auth = {'Authorization': 'Bearer agent-token'}
+
+    def test_agent_uploads_and_attaches_a_file(self):
+        up = self.client.post('/api/upload', files={'file': ('005.md', b'# five', 'text/markdown')}, headers=self.auth)
+        self.assertEqual(up.status_code, 200)
+        sent = self.client.post('/api/send', json={'text': 'here', 'channel': 'general',
+                                                   'attachments': [up.json()]}, headers=self.auth)
+        self.assertEqual(sent.status_code, 200)
+        msg = self.store.get_recent(1, channel='general')[-1]
+        self.assertEqual(msg['sender'], 'bot')
+        self.assertEqual(msg['attachments'][0]['name'], '005.md')
+        self.assertEqual(msg['attachments'][0]['url'], up.json()['url'])
+
+    def test_attachment_only_message_and_rejections(self):
+        up = self.client.post('/api/upload', files={'file': ('a.png', b'png', 'image/png')}, headers=self.auth)
+        self.assertEqual(self.client.post('/api/send', json={'attachments': [up.json()]}, headers=self.auth).status_code, 200)
+        for bad in [{'url': '/uploads/missing.png'}, {'url': '/etc/passwd'}, {'url': '/uploads/../log.jsonl'}, 'x']:
+            with self.subTest(bad=bad):
+                r = self.client.post('/api/send', json={'text': 't', 'attachments': [bad]}, headers=self.auth)
+                self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.post('/api/upload', files={'file': ('a.md', b'x', 'text/plain')},
+                                          headers={'Authorization': 'Bearer wrong'}).status_code, 403)
