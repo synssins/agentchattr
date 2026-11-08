@@ -118,23 +118,80 @@ def call_api(spec: dict, system: str, messages: list[dict]) -> str:
     return call_api_message(spec, system, messages).get("content") or ""
 
 
+# Per-call metrics: one JSON line per model call (data/metrics.jsonl), read by /api/admin/metrics.
+METRICS_PATH: Path | None = None   # set by AgentManager
+_metrics_lock = threading.Lock()
+_call_ctx = threading.local()      # .channel / .agent for the call being made on this thread
+
+
+def _record(spec: dict, seconds: float, prompt: int, cached: int, written: int, out: int, cost):
+    if METRICS_PATH is None:
+        return
+    row = {"ts": round(time.time(), 3), "agent": getattr(_call_ctx, "agent", None) or spec.get("name", ""),
+           "channel": getattr(_call_ctx, "channel", ""), "model": spec.get("model", ""),
+           "seconds": round(seconds, 3), "prompt_tokens": prompt, "cached_tokens": cached,
+           "cache_write_tokens": written, "completion_tokens": out,
+           "tokens_per_s": round(out / seconds, 1) if seconds > 0 else None, "cost": cost}
+    try:
+        with _metrics_lock, METRICS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        log.warning("could not write metrics row")
+
+
+def _explicit_cache(spec: dict) -> bool:
+    """Providers that cache only when asked (Anthropic, Gemini via OpenRouter). The rest
+    (OpenAI, Moonshot, DeepSeek...) cache a repeated prompt start automatically."""
+    model = spec.get("model", "").lower()
+    return spec.get("api_format") == "anthropic" or model.startswith(("anthropic/", "google/", "claude"))
+
+
+def _mark_last(messages: list[dict]) -> list[dict]:
+    """Copy of messages with a cache breakpoint on the last user/assistant text, so the next
+    call (next tool step) reads everything up to here from cache."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") not in ("user", "assistant", "tool") or m.get("tool_calls"):
+            continue
+        c = m.get("content")
+        if isinstance(c, str) and c:
+            parts = [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}]
+        elif isinstance(c, list) and c and c[-1].get("type") == "text":
+            parts = c[:-1] + [dict(c[-1], cache_control={"type": "ephemeral"})]
+        else:
+            continue
+        return messages[:i] + [dict(m, content=parts)] + messages[i + 1:]
+    return messages
+
+
 def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None,
                      tool_choice: str | None = None) -> dict:
     """One chat call -> the assistant message ({"content", "tool_calls"?}).
     Tools are passed for OpenAI-compatible providers only."""
     base = spec.get("base_url", "").rstrip("/")
     key = spec.get("api_key", "")
+    cache = _explicit_cache(spec)
+    t0 = time.monotonic()
     if spec.get("api_format") == "anthropic":
         messages = [dict(m, content=_to_anthropic(m["content"])) for m in messages]
-        payload = {"model": spec.get("model", ""), "max_tokens": 2048, "system": system,
-                   "messages": messages}
+        payload = {"model": spec.get("model", ""), "max_tokens": 2048,
+                   "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                   "messages": _mark_last(messages)}
         if spec.get("temperature") is not None:
             payload["temperature"] = float(spec["temperature"])
         data = _post_json(f"{base}/messages", payload,
                           {"x-api-key": key, "anthropic-version": "2023-06-01"}, timeout=_timeout(spec))
+        u = data.get("usage") or {}
+        read, wrote = u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0
+        _record(spec, time.monotonic() - t0, (u.get("input_tokens") or 0) + read + wrote, read, wrote,
+                u.get("output_tokens") or 0, None)
         return {"content": "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")}
+    sys_msg = {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+               if cache else system}
     payload = {"model": spec.get("model", ""),
-               "messages": [{"role": "system", "content": system}] + messages}
+               "messages": [sys_msg] + (_mark_last(messages) if cache else messages)}
+    if "openrouter.ai" in base:
+        payload["usage"] = {"include": True}  # adds cost and cache counts to the reply
     if tools:
         payload["tools"] = tools
         if tool_choice:
@@ -143,6 +200,10 @@ def call_api_message(spec: dict, system: str, messages: list[dict], tools: list 
         payload["temperature"] = float(spec["temperature"])
     data = _post_json(f"{base}/chat/completions", payload,
                       {"Authorization": f"Bearer {key}"} if key else {}, timeout=_timeout(spec))
+    u = data.get("usage") or {}
+    det = u.get("prompt_tokens_details") or {}
+    _record(spec, time.monotonic() - t0, u.get("prompt_tokens") or 0, det.get("cached_tokens") or 0,
+            det.get("cache_write_tokens") or 0, u.get("completion_tokens") or 0, u.get("cost"))
     return data["choices"][0]["message"]
 
 
@@ -330,7 +391,10 @@ class Runner:
                 return bool(re.search(rf"@{re.escape(self.name)}(?![\w-])", m.get("text", ""), re.I))
         return False
 
-    def _system(self, channel: str = "general") -> str:
+    def _system(self, channel: str = "general", dynamic: bool = True) -> str:
+        """The system prompt. API agents ask for dynamic=False: the parts that change from turn
+        to turn (who else is here, whether you were named) then go in _turn_note() after the
+        history, so the prompt start stays identical and providers can cache it."""
         import mcp_bridge
         parts = [ROOM_PROMPT.format(name=self.name), PERSONA_HELP]
         try:
@@ -362,11 +426,6 @@ class Runner:
         parts.append(f"Your persona (written by you):\n{persona}" if persona else
                      "You have no persona yet. Define one, distinct from the other agents, the first "
                      "time you're asked to or when it fits.")
-        if not self._addressed(channel):
-            parts.append(
-                "The latest message did not name you; it went to everyone (@all). Answer only if it asks all "
-                "participants, concerns your role, or concerns work you did or know about. Otherwise "
-                f"reply exactly {NO_REPLY} (it is not posted). Don't repeat what another agent already said.")
         role = mcp_bridge.get_role(self.name)
         if role:
             parts.append(f"Your role in the room: {role}.")
@@ -378,6 +437,15 @@ class Runner:
             rules = []
         if rules:
             parts.append("Room rules: " + "; ".join(rules))
+        if dynamic:
+            note = self._turn_note(channel)
+            if note:
+                parts.append(note)
+        return "\n\n".join(parts)
+
+    def _turn_note(self, channel: str) -> str:
+        """What changes from turn to turn: the other agents here, and whether you were named."""
+        parts = []
         others = [n for n in self.m.hub.registry.get_active_names()
                   if n != self.name and self.m.in_channel(n, channel)]
         if others:
@@ -387,6 +455,11 @@ class Runner:
                 lines.append(f"@{n}" + (f": {p[:200]}" if p else " (no persona yet)"))
             parts.append("Other agents in this channel:\n" + "\n".join(lines) + "\nYour persona and any "
                          "name you choose must be distinct from theirs and from names already used in the chat.")
+        if not self._addressed(channel):
+            parts.append(
+                "The latest message did not name you; it went to everyone (@all). Answer only if it asks all "
+                "participants, concerns your role, or concerns work you did or know about. Otherwise "
+                f"reply exactly {NO_REPLY} (it is not posted). Don't repeat what another agent already said.")
         return "\n\n".join(parts)
 
     def _turn(self, channel: str):
@@ -438,12 +511,27 @@ class Runner:
                 self.m.set_inflight(self.name, channel, False)
             self.resuming.discard(channel)
 
-    def _api_turn(self, channel: str) -> str:
-        n = int(self.spec.get("context_messages") or 30)
+    def _window(self, channel: str, n: int) -> list[dict]:
+        """Between n and 2n recent chat messages. The window's first message stays put until 2n
+        messages have piled up, then jumps forward to the newest n, so the start of the
+        history is identical across turns and providers can cache it."""
         start = int(self.spec.get("context_from") or 0)
-        history = [m for m in self.m.hub.store.get_recent(n, channel=channel)
-                   if m["id"] >= start  # spawned/fresh instance: conversation starts there
-                   and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"]
+        recent = [m for m in self.m.hub.store.get_recent(4 * n + 20, channel=channel)
+                  if m["id"] >= start  # spawned/fresh instance: conversation starts there
+                  and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"]
+        if not recent:
+            return []
+        anchors = self.__dict__.setdefault("_anchors", {})
+        first = anchors.get(channel)
+        ids = [m["id"] for m in recent]
+        if first not in ids or len(ids) - ids.index(first) > 2 * n:
+            first = recent[-n]["id"] if len(recent) > n else recent[0]["id"]
+            anchors[channel] = first
+        return recent[ids.index(first):]
+
+    def _api_turn(self, channel: str) -> str:
+        n = max(1, int(self.spec.get("context_messages") or 30))
+        history = self._window(channel, n)
         if history and history[-1]["sender"] == self.name:
             # Nothing new since our own reply (a trigger we already answered). Gemini also
             # rejects a request that ends with the model's turn (HTTP 400).
@@ -473,8 +561,11 @@ class Runner:
                         except OSError:
                             pass
                 msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
-            if not msgs or msgs[0]["role"] != "user":  # Anthropic requires a user turn first
-                msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
+            # Always the same first line (a fixed prompt start caches; Anthropic also needs a user turn first)
+            msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
+            note = self._turn_note(channel)
+            if note:
+                msgs.append({"role": "user", "content": f"(Room note, not a chat message)\n{note}"})
             return msgs
 
         msgs = build(with_images=bool(inline))
@@ -492,7 +583,8 @@ class Runner:
         """Let an API agent call tools (agent_tools) until it answers in text."""
         import admin_api
         import agent_tools
-        spec, system = self.spec, self._system(channel)
+        spec, system = self.spec, self._system(channel, dynamic=False)
+        _call_ctx.agent, _call_ctx.channel = self.name, channel
         perm, allowed = spec.get("permissions", "read"), spec.get("allowed_commands") or []
         import mcp_hub
         tools, mcp_names = None, {}
@@ -617,6 +709,8 @@ class AgentManager:
         self.data_dir = data_dir
         self.path = Path(data_dir) / "managed_agents.json"
         self.state_path = Path(data_dir) / "managed_agents_state.json"
+        global METRICS_PATH
+        METRICS_PATH = Path(data_dir) / "metrics.jsonl"
         self.lock = threading.Lock()
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}

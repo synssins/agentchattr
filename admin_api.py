@@ -515,6 +515,49 @@ async def rulebooks_delete(name: str):
     return await rulebooks_list()
 
 
+# ---------------------------------------------------------------- Metrics
+
+def metrics_summary(path: Path, since: float) -> dict:
+    """Totals per agent and model from data/metrics.jsonl (one line per model call)."""
+    groups, recent = {}, []
+    if path.exists():
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("ts", 0) < since:
+                    continue
+                recent.append(r)
+                g = groups.setdefault((r.get("agent", ""), r.get("model", "")), {
+                    "agent": r.get("agent", ""), "model": r.get("model", ""), "calls": 0, "seconds": 0.0,
+                    "prompt_tokens": 0, "cached_tokens": 0, "cache_write_tokens": 0,
+                    "completion_tokens": 0, "cost": 0.0, "cost_known": 0})
+                g["calls"] += 1
+                g["seconds"] += r.get("seconds") or 0
+                for k in ("prompt_tokens", "cached_tokens", "cache_write_tokens", "completion_tokens"):
+                    g[k] += r.get(k) or 0
+                if r.get("cost") is not None:
+                    g["cost"] += r["cost"]
+                    g["cost_known"] += 1
+    rows = []
+    for g in groups.values():
+        g["cache_hit_pct"] = round(100 * g["cached_tokens"] / g["prompt_tokens"], 1) if g["prompt_tokens"] else 0.0
+        g["tokens_per_s"] = round(g["completion_tokens"] / g["seconds"], 1) if g["seconds"] else None
+        g["avg_seconds"] = round(g["seconds"] / g["calls"], 2)
+        g["seconds"] = round(g["seconds"], 1)
+        g["cost"] = round(g["cost"], 4) if g["cost_known"] else None
+        rows.append(g)
+    rows.sort(key=lambda g: -g["prompt_tokens"])
+    return {"rows": rows, "recent": recent[-50:][::-1]}
+
+
+@router.get("/api/admin/metrics")
+async def metrics_get(hours: float = 24):
+    return metrics_summary(data_dir / "metrics.jsonl", time.time() - max(0.0, hours) * 3600)
+
+
 # ---------------------------------------------------------------- IRC
 
 @router.get("/api/admin/irc")

@@ -14,6 +14,7 @@
         { id: 'secrets', label: 'Secrets', render: renderSecrets },
         { id: 'mcp', label: 'MCP servers', render: renderMcp },
         { id: 'irc', label: 'IRC', render: renderIrc },
+        { id: 'metrics', label: 'Metrics', render: renderMetrics },
     ];
     let current = 'general';
 
@@ -366,6 +367,32 @@
                         show('mcp');
                     } }))];
         })));
+    }
+
+    // ------------------------------------------------------------ Metrics
+    async function renderMetrics(panel, hours = 24) {
+        heading(panel, 'Metrics', 'Every model call by API agents: tokens, prompt cache hits, speed and cost. '
+            + 'Speed is output tokens over the whole call, including the time the model spends reading the prompt.');
+        const pick = el('select', { 'aria-label': 'Period', onchange: () => { panel.textContent = ''; renderMetrics(panel, +pick.value); } });
+        [[1, 'Last hour'], [24, 'Last 24 hours'], [168, 'Last 7 days'], [720, 'Last 30 days']].forEach(([h, t]) =>
+            pick.append(el('option', { value: String(h), text: t, selected: h === hours })));
+        panel.append(el('div', { class: 'agents-inline' }, pick,
+            el('button', { class: 'agents-btn', text: 'Refresh', onclick: () => { panel.textContent = ''; renderMetrics(panel, hours); } })));
+        const m = await api('GET', `/api/admin/metrics?hours=${hours}`);
+        const n = (x) => (x == null ? '—' : Number(x).toLocaleString());
+        if (!m.rows.length) {
+            panel.append(el('p', { text: 'No model calls recorded in this period.' }));
+            return;
+        }
+        panel.append(table(['Agent', 'Model', 'Calls', 'Prompt tokens', 'Cached', 'Cache hit', 'Output tokens', 'Tokens/s', 'Avg call', 'Cost'],
+            m.rows.map(r => [r.agent, r.model, n(r.calls), n(r.prompt_tokens), n(r.cached_tokens), `${r.cache_hit_pct}%`,
+                n(r.completion_tokens), r.tokens_per_s == null ? '—' : String(r.tokens_per_s), `${r.avg_seconds} s`,
+                r.cost == null ? '—' : `$${r.cost.toFixed(4)}`])));
+        panel.append(el('h3', { text: 'Latest calls' }));
+        panel.append(table(['Time', 'Agent', 'Channel', 'Prompt', 'Cached', 'Output', 'Seconds', 'Tokens/s', 'Cost'],
+            m.recent.map(r => [new Date(r.ts * 1000).toLocaleTimeString(), r.agent, r.channel ? '#' + r.channel : '',
+                n(r.prompt_tokens), n(r.cached_tokens), n(r.completion_tokens), String(r.seconds),
+                r.tokens_per_s == null ? '—' : String(r.tokens_per_s), r.cost == null ? '—' : `$${Number(r.cost).toFixed(4)}`])));
     }
 
     // ------------------------------------------------------------ IRC
