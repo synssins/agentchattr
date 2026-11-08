@@ -1424,7 +1424,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "max_agent_hops" in new:
                     try:
                         hops = int(new["max_agent_hops"])
-                        hops = max(1, min(hops, 50))
+                        hops = max(0, min(hops, 50))  # 0 turns the loop guard off
                         room_settings["max_agent_hops"] = hops
                         router.max_hops = hops
                     except (ValueError, TypeError):

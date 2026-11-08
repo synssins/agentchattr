@@ -78,7 +78,7 @@ class Router:
             if not mentions:
                 return []
             ch["hop_count"] += 1
-            if ch["hop_count"] > self.max_hops:
+            if self.max_hops and ch["hop_count"] > self.max_hops:  # 0 = loop guard off
                 ch["paused"] = True
                 return []
             # Don't route back to self

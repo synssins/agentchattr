@@ -10,6 +10,16 @@ from router import Router
 
 
 class RouterMentionTests(unittest.TestCase):
+    def test_zero_max_hops_turns_loop_guard_off(self):
+        router = Router(["a", "b"], default_mention="none", max_hops=0)
+        for _ in range(200):
+            self.assertEqual(router.get_targets("a", "@b go"), ["b"])
+        self.assertFalse(router.is_paused())
+        router.max_hops = 2
+        router.get_targets("a", "@b go")
+        self.assertEqual(router.get_targets("a", "@b go"), [])  # 200+ hops already counted
+        self.assertTrue(router.is_paused())
+
     def test_hyphenated_agent_name_is_parsed_as_full_mention(self):
         router = Router(["telegram-bridge"], default_mention="none")
 

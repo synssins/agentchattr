@@ -2195,7 +2195,7 @@ function saveSettings() {
                 username: newUsername || 'user',
                 subtitle: newSubtitle,
                 font: newFont,
-                max_agent_hops: parseInt(newHops) || 4,
+                max_agent_hops: Number.isNaN(parseInt(newHops)) ? 4 : parseInt(newHops),  // 0 = off
                 history_limit: newHistory,
                 contrast: newContrast,
                 rules_refresh_interval: parseInt(newRulesRefresh) || 0,
