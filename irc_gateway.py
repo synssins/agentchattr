@@ -251,9 +251,11 @@ class Gateway:
     def members(self, ch: str) -> list[str]:
         return [irc_nick(self.username())] + [irc_nick(n) for n in self.online_agents(ch)]
 
-    def continue_routing(self):
-        self.hub.router.continue_routing()
-        self.hub.store.add("system", "Resuming agent conversation...", msg_type="system")
+    def continue_routing(self, channel: str | None = None):
+        """Resume the loop guard in one channel, or in every channel when none is given."""
+        for ch in ([channel] if channel else self.channels()):
+            self.hub.router.continue_routing(ch)
+            self.hub.store.add("system", "Resuming agent conversation...", msg_type="system", channel=ch)
 
     # --- per-client replies ----------------------------------------------
     def join(self, c: Client, ch: str):
@@ -361,7 +363,7 @@ class Gateway:
         if text.startswith("\x01"):  # CTCP (ACTION etc.): keep the words, drop the framing
             text = text.strip("\x01").removeprefix("ACTION ").strip()
         if text.lower() in ("!continue", "/continue"):
-            self.continue_routing()
+            self.continue_routing(target.lstrip("#") if target.startswith("#") else None)
             return
         if target.startswith("#"):
             ch = target[1:]

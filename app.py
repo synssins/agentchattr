@@ -1280,7 +1280,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         await broadcast_status()
                         continue
                     if cmd == "/continue":
-                        router.continue_routing()
+                        router.continue_routing(channel)  # this channel's loop guard, not #general's
                         store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)
                         await broadcast_status()
                         continue
