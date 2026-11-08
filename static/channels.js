@@ -7,7 +7,6 @@
 // State (local to channels)
 // ---------------------------------------------------------------------------
 
-const _channelScrollMsg = {};  // channel name -> message ID at top of viewport
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -285,9 +284,6 @@ function _sidebarConfirmDelete(name, row, label) {
 function switchChannel(name) {
     if (name === window.activeChannel) return;
     const prevChannel = window.activeChannel;
-    // Save top-visible message ID for current channel
-    const topId = _getTopVisibleMsgId();
-    if (topId) _channelScrollMsg[window.activeChannel] = topId;
     window._setActiveChannel(name);
     // Swap the sticky @-mention toggles to this channel's remembered set
     if (window._onChannelSwitchMentions) window._onChannelSwitchMentions(prevChannel, name);
@@ -298,17 +294,9 @@ function switchChannel(name) {
     if (window.renderMembers) window.renderMembers();  // member list is per channel
     Store.set('activeChannel', name);
     document.querySelector('#channel-tabs .channel-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    // Restore: scroll to saved message, or bottom if none saved
-    const savedId = _channelScrollMsg[name];
-    if (savedId) {
-        const el = document.querySelector(`.message[data-id="${savedId}"]`);
-        if (el) {
-            el.scrollIntoView({ block: 'start' });
-            if (typeof dayFloatRefresh === 'function') dayFloatRefresh();
-            return;
-        }
-    }
-    window.scrollToBottom();
+    // Always land on the newest message, instantly (the timeline's CSS smooth scroll
+    // would otherwise animate through the whole channel)
+    window.scrollToBottom(true);
     if (typeof dayFloatRefresh === 'function') dayFloatRefresh();
 }
 

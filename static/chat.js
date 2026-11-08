@@ -2837,7 +2837,7 @@ function setupScroll() {
     // Keep pinned to bottom when content changes (e.g. images load)
     const resizeObserver = new ResizeObserver(() => {
         if (autoScroll && !historyLoading) {
-            scrollToBottom();
+            scrollToBottom(true);  // a pin correction, not a visible scroll
         }
     });
     resizeObserver.observe(messages);
