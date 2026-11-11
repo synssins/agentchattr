@@ -3348,6 +3348,53 @@ function buildMentionToggles() {
 let recognition = null;
 let isListening = false;
 let voiceText = '';
+// Voice typing mode (Settings > Voice, this browser): 'box' types into the composer,
+// 'auto' also sends when you stop talking, 'live' shows a draft bubble in the chat and sends it.
+function voiceTypingMode() {
+    try { return localStorage.getItem('agenthub-voice-typing') || 'box'; } catch (_) { return 'box'; }
+}
+const VOICE_PAUSE_MS = 1200;  // quiet after a final result = end of speech
+let voicePauseTimer = null;
+let voiceLiveText = '';
+
+function voiceDraft(text) {
+    let el = document.getElementById('voice-draft');
+    if (!text) { el?.remove(); return; }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'voice-draft';
+        el.className = 'voice-draft';
+        el.setAttribute('aria-live', 'polite');
+        document.getElementById('messages').appendChild(el);
+    }
+    el.innerHTML = `<span class="voice-draft-label">Speaking…</span> ${escapeHtml(text)}`;
+    scrollToBottom();
+}
+
+// End of speech in 'auto' / 'live' mode: send what was heard, then listen afresh
+function voiceSendHeard() {
+    clearTimeout(voicePauseTimer);
+    const input = document.getElementById('input');
+    if (voiceTypingMode() === 'live') {
+        const text = voiceLiveText.trim();
+        voiceLiveText = '';
+        voiceDraft('');
+        if (text && !(window.Voice && Voice.isEcho(text))) {
+            const kept = input.value;  // whatever was typed stays in the box
+            input.value = text;
+            sendMessage();
+            input.value = kept;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    } else if (input.value.trim() && !(window.Voice && Voice.isEcho(input.value))) {
+        sendMessage();
+    }
+    voiceText = input.value;
+    if (recognition && !voiceRestartPending) {
+        voiceRestartPending = true;  // restart so the next utterance starts from an empty transcript
+        try { recognition.abort(); } catch (_) { stopVoice(); }
+    }
+}
 let voiceRestartPending = false;
 let voiceRestartTimer = null;
 
@@ -3403,6 +3450,10 @@ function startVoiceRecognition() {
     clearTimeout(voiceRestartTimer);
     voiceRestartTimer = null;
     if (!isListening || recognition) return;
+    if (window.Voice && Voice.speakingNow() && !Voice.bargeIn()) {  // wait until the agent has finished speaking
+        voiceRestartTimer = setTimeout(startVoiceRecognition, 300);
+        return;
+    }
     const input = document.getElementById('input');
     const baseText = input.value;
     voiceText = baseText;
@@ -3424,6 +3475,21 @@ function startVoiceRecognition() {
                 return;
             }
             const transcript = Array.from(e.results, result => result[0].transcript).join('');
+            const mode = voiceTypingMode();
+            // The room is reading a reply aloud: what the mic hears now is that voice, not you
+            if (window.Voice && Voice.speakingNow() && !Voice.bargeIn()) {
+                if (!voiceRestartPending) { voiceRestartPending = true; try { current.abort(); } catch (_) {} }
+                return;
+            }
+            clearTimeout(voicePauseTimer);
+            if (mode !== 'box' && e.results[e.results.length - 1].isFinal) {
+                voicePauseTimer = setTimeout(voiceSendHeard, VOICE_PAUSE_MS);
+            }
+            if (mode === 'live') {  // the composer is left alone
+                voiceLiveText = transcript;
+                voiceDraft(transcript);
+                return;
+            }
             const separator = baseText && transcript && !/\s$/.test(baseText) && !/^\s/.test(transcript) ? ' ' : '';
             voiceText = baseText + separator + transcript;
             input.value = voiceText;
@@ -3457,6 +3523,10 @@ function startVoiceRecognition() {
 
 function stopVoice() {
     isListening = false;
+    clearTimeout(voicePauseTimer);
+    if (voiceTypingMode() === 'live' && voiceLiveText.trim()) voiceSendHeard();  // don't lose the last words
+    voiceLiveText = '';
+    voiceDraft('');
     clearTimeout(voiceRestartTimer);
     voiceRestartTimer = null;
     voiceRestartPending = false;

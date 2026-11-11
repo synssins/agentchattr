@@ -28,6 +28,23 @@ const Voice = (() => {
     let audio = null;      // the playing <audio>
     let playing = null;    // message id being read
     let gen = 0;           // bumps on stop: pending fetches are thrown away
+    let quietUntil = 0;    // the mic ignores sound until then (the speaker's echo dies down)
+    let spoken = [];       // [{t, words}] sentences read aloud lately, to drop their echo
+    const TAIL_MS = 800;
+    const bargeIn = () => store.get('agenthub-voice-bargein', false);  // Settings > Voice; for headphones
+
+    // Is the room speaker talking (or just stopped)? While it is, the mic is not listened to
+    // unless barge-in is on.
+    function speakingNow() { return playing != null || Date.now() < quietUntil; }
+
+    // Does a transcript mostly repeat what was read aloud in the last 30 s? (echo)
+    function isEcho(text) {
+        const words = (text || '').toLowerCase().match(/[a-z0-9']+/g) || [];
+        if (!words.length) return false;
+        spoken = spoken.filter(x => Date.now() - x.t < 30000);
+        const said = new Set(spoken.flatMap(x => x.words));
+        return words.filter(w => said.has(w)).length / words.length >= 0.6;
+    }
 
     function sentences(text) {
         const t = (text || '').replace(/```[\s\S]*?```/g, ' (code block) ').replace(/\s+/g, ' ').trim();
@@ -49,7 +66,7 @@ const Voice = (() => {
     function stop() {
         gen++;
         queue = [];
-        if (audio) { audio.pause(); audio.src = ''; audio = null; }
+        if (audio) { audio.pause(); audio.src = ''; audio = null; quietUntil = Date.now() + TAIL_MS; }
         markPlaying(null);
     }
 
@@ -77,9 +94,10 @@ const Voice = (() => {
             try { url = await pending; } catch (err) { toast(err.message); break; }
             pending = i + 1 < parts.length ? fetchAudio(item.agent, parts[i + 1]) : null;
             if (mine !== gen) { URL.revokeObjectURL(url); break; }
+            spoken.push({ t: Date.now(), words: parts[i].toLowerCase().match(/[a-z0-9']+/g) || [] });
             await new Promise((resolve) => {
                 audio = new Audio(url);
-                audio.onended = audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+                audio.onended = audio.onerror = () => { URL.revokeObjectURL(url); quietUntil = Date.now() + TAIL_MS; resolve(); };
                 audio.play().catch(() => { toast('The browser blocked audio: click anywhere on the page once, then try again.'); resolve(); });
             });
         }
@@ -160,6 +178,7 @@ const Voice = (() => {
     function onFrame(f, rate) {
         if (ptt) { frames.push(f); return; }
         if (!talking || busy) return;
+        if (speakingNow() && !bargeIn() && !speaking) { voiced = 0; preroll = []; return; }  // half duplex: no self-hearing
         let sum = 0;
         for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
         const rms = Math.sqrt(sum / f.length);
@@ -221,6 +240,7 @@ const Voice = (() => {
             if (!r.ok) throw new Error(data.error || 'transcription failed');
             const text = (data.text || '').trim();
             if (!text || /^[\[(].*[\])]$/.test(text)) return;  // [BLANK_AUDIO], (noise)
+            if (isEcho(text)) return;  // the mic heard the agent's own voice
             if (target && STOP_WORDS.test(text)) {
                 stop();
                 await post('/api/agents/stop', { name: target, channel: activeChannel });
@@ -359,6 +379,6 @@ const Voice = (() => {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
     window.addEventListener('agenthub-channel', () => { stop(); if (ui) { fillTargets(); setState(); } });
 
-    return { button, stop, speak: enqueue, sentences };
+    return { button, stop, speak: enqueue, sentences, speakingNow, isEcho, bargeIn };
 })();
 window.Voice = Voice;

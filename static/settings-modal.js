@@ -247,6 +247,20 @@
         try { conf = await api('GET', '/api/voice/config'); } catch (err) {
             panel.append(el('p', { class: 'agents-warn', text: err.message })); return;
         }
+        // Mic button behaviour: per browser, saved at once
+        const typing = el('select', { 'aria-label': 'Voice typing' },
+            el('option', { value: 'box', text: 'Type into the message box (you press Send)' }),
+            el('option', { value: 'auto', text: 'Type into the box and send when you stop talking' }),
+            el('option', { value: 'live', text: 'Show live in the chat and send when you stop talking' }));
+        try { typing.value = localStorage.getItem('agenthub-voice-typing') || 'box'; } catch (_) { /* private mode */ }
+        typing.addEventListener('change', () => { try { localStorage.setItem('agenthub-voice-typing', typing.value); } catch (_) {} });
+        const barge = el('input', { type: 'checkbox' });
+        try { barge.checked = JSON.parse(localStorage.getItem('agenthub-voice-bargein') || 'false'); } catch (_) {}
+        barge.addEventListener('change', () => { try { localStorage.setItem('agenthub-voice-bargein', JSON.stringify(barge.checked)); } catch (_) {} });
+        panel.append(el('label', { class: 'agents-toggle' }, barge,
+            el('span', { text: 'Interrupt an agent by talking over it (barge-in). Use with headphones: with speakers the mic hears the agent. Off: the mic pauses while an agent speaks.' })));
+        panel.append(el('label', { class: 'agents-field' }, el('span', { text: 'Mic button (voice typing, this browser)' }), typing),
+            el('h3', { text: 'Speech providers' }));
         const rows = conf.providers.map(p => ({ ...p }));
         const list = el('div');
         const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format (mp3, wav)'],

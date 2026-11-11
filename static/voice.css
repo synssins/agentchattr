@@ -59,3 +59,15 @@
 }
 .voice-hush:hover, .voice-end:hover { border-color: var(--accent); }
 .voice-speak-btn.playing { color: var(--accent); }
+
+/* Live voice typing: what you're saying, shown in the chat before it is sent */
+.voice-draft {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px dashed var(--accent);
+    border-radius: var(--radius-lg);
+    color: var(--text);
+    opacity: 0.85;
+    font-style: italic;
+}
+.voice-draft-label { color: var(--accent); font-style: normal; font-size: 12px; margin-right: 6px; }
