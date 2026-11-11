@@ -89,6 +89,7 @@ const Voice = (() => {
             }
             clip.done = true;
             poke();
+            prefetch();  // the voice server is free: start the next sentence
         })();
         return clip;
     }
@@ -163,9 +164,15 @@ const Voice = (() => {
     }
 
     // Queue a message (or a streamed piece of one): split into sentences
-    const AHEAD = 4;  // sentences rendering ahead: the voice server never idles, so no gaps between sentences
+    // Sentences render one at a time, back to back: each starts the moment the previous one is
+    // rendered (not when it starts playing), so the voice server never idles and there are no gaps.
+    // Never several at once: Chatterbox runs parallel requests interleaved and they all finish late.
+    let current = null;  // the clip being played (may still be rendering)
     function prefetch() {
-        for (const q of queue.slice(0, AHEAD)) if (!q.clip) q.clip = startClip(q.agent, q.text);
+        if (current && !current.done) return;
+        if (queue.some(q => q.clip && !q.clip.done)) return;
+        const next = queue.find(q => !q.clip);
+        if (next) next.clip = startClip(next.agent, next.text);
     }
 
     function enqueue(msg) {
@@ -180,13 +187,14 @@ const Voice = (() => {
         while (queue.length && mine === gen) {
             const part = queue.shift();
             part.clip = part.clip || startClip(part.agent, part.text);
-            prefetch();
+            current = part.clip;
             markPlaying(part.id);
             spoken.push({ t: Date.now(), words: part.text.toLowerCase().match(/[a-z0-9']+/g) || [] });
             await playClip(part.clip, mine);
             if (mine === gen) quietUntil = Date.now() + TAIL_MS;
         }
         running = false;
+        current = null;
         if (mine === gen) markPlaying(null);
     }
 
