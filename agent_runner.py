@@ -682,7 +682,7 @@ class Runner:
                 lines.append(f"@{n}" + (f": {p[:200]}" if p else " (no persona yet)"))
             parts.append("Other agents in this channel:\n" + "\n".join(lines) + "\nYour persona and any "
                          "name you choose must be distinct from theirs and from names already used in the chat.")
-        if not self._addressed(channel):
+        if others and not self._addressed(channel):  # alone in the channel: every message is for you
             parts.append(
                 "The latest message did not name you; it went to everyone (@all). Answer only if it asks all "
                 "participants, concerns your role, or concerns work you did or know about. Otherwise "

@@ -101,6 +101,16 @@ class Compaction(unittest.TestCase):
         self.assertEqual(second[:len(first)], first)
         self.assertGreater(len(second), len(first))
 
+    def test_alone_in_a_channel_untagged_messages_are_for_you(self):
+        """Regression: with thinking off, the only agent in a channel obeyed 'not named, stay quiet'."""
+        r = agent_runner.Runner(self.mgr, "q")
+        self.store.add("alice", "good morning")
+        self.mgr.hub.registry.get_active_names = lambda: ["q"]
+        self.assertNotIn("did not name you", r._turn_note("general"))
+        self.mgr.hub.registry.get_active_names = lambda: ["q", "other"]
+        self.mgr.in_channel = lambda n, ch: True
+        self.assertIn("did not name you", r._turn_note("general"))
+
     def test_old_tool_output_is_trimmed_past_the_budget(self):
         msgs = [{"role": "tool", "content": "x" * 1000} for _ in range(5)]
         agent_runner._trim_tool_output(msgs, budget=3000, keep=2)

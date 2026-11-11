@@ -26,6 +26,9 @@ def _setup(test, **spec):
     mgr = agent_runner.AgentManager(hub, tmp.name)
     mgr._apply = lambda name: None
     mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", **spec})
+    # another agent shares the channel (alone, every message counts as addressed to you)
+    hub.registry.get_active_names = lambda: ["qwen", "other"]
+    mgr.in_channel = lambda name, channel: True
     return tmp, store, mgr
 
 
