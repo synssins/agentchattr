@@ -126,7 +126,8 @@ async def _round(sender: str, text: str, target: str | None):
 
 
 def _format(m: dict) -> str:
-    return f"{m['sender']}: {m['text']}"
+    import artifacts
+    return f"{m['sender']}: {artifacts.render_for_agents(m['text'], 'GET /api/artifacts/<id>')}"
 
 
 @router.post("/v1/chat/completions")

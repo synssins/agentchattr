@@ -287,7 +287,7 @@ def _install_security_middleware(token: str, cfg: dict):
             # Allow registered agents to authenticate via Bearer token
             # for /api/messages and /api/send (no browser session needed).
             auth_header = request.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer ") and (path in ("/api/messages", "/api/send", "/api/upload") or path.startswith("/api/rules/")):
+            if auth_header.lower().startswith("bearer ") and (path in ("/api/messages", "/api/send", "/api/upload") or path.startswith(("/api/rules/", "/api/artifacts/"))):
                 bearer = auth_header[7:].strip()
                 if _self.registry and _self.registry.resolve_token(bearer):
                     return await call_next(request)

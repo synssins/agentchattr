@@ -47,6 +47,8 @@ RESUME_NOTE = ("(Your previous turn here was cut off by a server restart before 
 ATTACH_RE = re.compile(r"\[attach:\s*([^\]\n]+)\]", re.I)
 MAX_ATTACH_BYTES = 25 * 1024 * 1024
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
+# New version of a shared artifact, for agents without the artifact_update tool
+ARTIFACT_UPDATE_RE = re.compile(r"\[artifact-update\s+([A-Za-z0-9_-]{6,24})\]\n?(.*?)\[/artifact-update\]", re.S | re.I)
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
     "others. It follows you across projects and context resets. To set or rewrite it, put the "
@@ -64,7 +66,10 @@ ROOM_PROMPT = (
     "the same time: if the agent you mention is busy, your request waits in its queue and it "
     "picks it up when it finishes, so don't stall waiting for an answer. To show the owner an "
     "image or file (screenshot, render, document), put [attach: /absolute/path] in your reply; "
-    "it is posted as an attachment they can open. If you have nothing "
+    "it is posted as an attachment they can open. Code blocks of 8+ lines become shared artifacts, "
+    "shown as [artifact <id> ...]: read one with artifact_read (or its text is included), and post a "
+    "new version with artifact_update or by putting [artifact-update <id>]full new text[/artifact-update] "
+    "in your reply. If you have nothing "
     "useful to add, reply exactly: " + NO_REPLY
 )
 
@@ -376,7 +381,10 @@ class Runner:
         """Message text plus on-disk paths of its attachments (agents read them by path)."""
         extra = [f"[attached {'image' if a.get('kind') == 'image' else 'file'} "
                  f"{a.get('name', '')}: {path}]" for path, a in self._files(m)]
-        return "\n".join([m.get("text", "")] + extra).strip()
+        import artifacts
+        tools = self.spec.get("kind") == "api" and self.spec.get("api_format") != "anthropic"
+        text = artifacts.render_for_agents(m.get("text", ""), "artifact_read", inline=not tools)
+        return "\n".join([text] + extra).strip()
 
     def _attachments(self, paths: list[str]) -> tuple[list[dict], list[str]]:
         """Copy files an agent attached into uploads/ -> (attachment dicts, problems)."""
@@ -401,6 +409,17 @@ class Runner:
             out.append({"name": src.name, "url": f"/uploads/{name}", "size": src.stat().st_size,
                         "media_type": mt, "kind": "image" if mt.startswith("image/") else "file"})
         return out, problems
+
+    def _artifact_updates(self, reply: str) -> list[str]:
+        """Apply [artifact-update <id>]...[/artifact-update] blocks; -> problems to show."""
+        import artifacts
+        out = []
+        for aid, body in ARTIFACT_UPDATE_RE.findall(reply):
+            body = re.sub(r"^\s*```[^\n]*\n|\n```\s*$", "", body.strip("\n"))  # a fence around it is optional
+            res = artifacts.update_for(self.name, aid, body)
+            if res.startswith("error"):
+                out.append(f"(couldn't update artifact {aid}: {res[7:]})")
+        return out
 
     def _addressed(self, channel: str) -> bool:
         """Was the latest message from someone else aimed at this agent by name?
@@ -502,6 +521,8 @@ class Runner:
                               channel=channel)
             attachments, problems = self._attachments(ATTACH_RE.findall(reply))
             reply = ATTACH_RE.sub("", reply).strip()
+            problems += self._artifact_updates(reply)
+            reply = ARTIFACT_UPDATE_RE.sub("", reply).strip()
             if problems:
                 reply = (reply + "\n\n" + "\n".join(problems)).strip()
             renames = RENAME_RE.findall(reply)
@@ -566,7 +587,7 @@ class Runner:
             msgs = []
             for m in history:
                 if m["sender"] == self.name:
-                    msgs.append({"role": "assistant", "content": m["text"]})
+                    msgs.append({"role": "assistant", "content": self._text(m) if "[artifact:" in m["text"] else m["text"]})
                     continue
                 text = f"#{m['id']} {m['sender']}: {self._text(m)}"  # ids let agents cite messages
                 parts = []
@@ -613,7 +634,8 @@ class Runner:
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
-                                        protect=str(Path(self.m.data_dir).resolve()))
+                                        protect=str(Path(self.m.data_dir).resolve()),
+                                        agent=self.name, channel=channel)
         try:
             steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
         except (TypeError, ValueError):
