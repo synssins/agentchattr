@@ -128,6 +128,8 @@ const Control = (() => {
         const [reactBtn, threadBtn] = tools.children;
         reactBtn.onclick = (e) => openPicker(msg.id, reactBtn, e);
         threadBtn.onclick = (e) => { e.stopPropagation(); open(msg.id, true); };
+        const speak = window.Voice?.button(msg);  // read aloud (agent messages)
+        if (speak) tools.appendChild(speak);
         bubble.appendChild(tools);
         bubbles[msg.id] = bubble;
         renderReactions(msg.id);

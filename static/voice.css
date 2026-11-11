@@ -1,0 +1,61 @@
+/* Voice controls next to the mic, the conversation bar above the composer, the read-aloud button */
+.voice-talk, .voice-auto {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    color: var(--text-dim);
+    padding: 0 10px;
+    min-height: 40px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    touch-action: none;
+    user-select: none;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.voice-talk:hover, .voice-auto:hover { color: var(--text); border-color: var(--accent); }
+.voice-auto[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.voice-talk[data-state]:not([data-state="off"]) { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
+.voice-talk[data-state="hearing"], .voice-talk[data-state="recording"] { background: var(--error-color); border-color: var(--error-color); }
+.voice-talk[data-state="listening"] { animation: voice-pulse 1.6s ease-in-out infinite; }
+@keyframes voice-pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .voice-talk[data-state="listening"] { animation: none; } }
+
+.voice-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 6px 12px;
+    margin: 0 0 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: var(--bg-header);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+}
+.voice-bar[hidden] { display: none; }
+.voice-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.voice-status { flex: 1; min-width: 120px; color: var(--text); }
+.voice-target-label { display: flex; align-items: center; gap: 6px; }
+.voice-target {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    padding: 3px 6px;
+    font: inherit;
+}
+.voice-hush, .voice-end {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    color: var(--text);
+    padding: 3px 10px;
+    font: inherit;
+    cursor: pointer;
+}
+.voice-hush:hover, .voice-end:hover { border-color: var(--accent); }
+.voice-speak-btn.playing { color: var(--accent); }

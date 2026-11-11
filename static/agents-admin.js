@@ -266,6 +266,40 @@
         requireTool.checked = !!a.require_tool;
         const compact = el('input', { type: 'checkbox' });
         compact.checked = !a.no_compact;
+        // Voice (read-aloud and conversations): provider + voice from Settings > Voice
+        const vProvider = el('select', { 'aria-label': 'Voice provider' });
+        const vVoice = el('select', { 'aria-label': 'Voice' });
+        const vSpeed = el('input', { type: 'number', min: '0.5', max: '2', step: '0.05', value: a.voice_speed || '', placeholder: '1.0' });
+        const vPreview = el('button', { type: 'button', class: 'agents-btn', text: 'Preview' });
+        let voiceConf = null;
+        const fillVoices = () => {
+            const list = (voiceConf?.voices?.[vProvider.value] || {}).voices || [];
+            vVoice.textContent = '';
+            vVoice.append(el('option', { value: '', text: 'Provider default' }), ...list.map(v => el('option', { value: v, text: v })));
+            vVoice.value = vProvider.value === (a.voice_provider || '') && list.includes(a.voice) ? a.voice : '';
+        };
+        api('GET', '/api/voice/config').then(conf => {
+            voiceConf = conf;
+            vProvider.append(el('option', { value: '', text: `Default (${conf.default_provider})` }),
+                ...conf.providers.map(p => el('option', { value: p.name, text: p.name })));
+            vProvider.value = a.voice_provider || '';
+            fillVoices();
+        }).catch(() => vProvider.append(el('option', { value: a.voice_provider || '', text: a.voice_provider || 'Voice service unavailable' })));
+        vProvider.addEventListener('change', fillVoices);
+        vPreview.addEventListener('click', async () => {
+            vPreview.disabled = true;
+            try {
+                const res = await fetch('/api/voice/preview', { method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
+                    body: JSON.stringify({ provider: vProvider.value, voice: vVoice.value, speed: Number(vSpeed.value) || null,
+                                           text: `Hi, I'm ${name.value.trim() || 'your agent'}. This is how I sound.` }) });
+                if (!res.ok) throw new Error((await res.json()).error || 'preview failed');
+                const url = URL.createObjectURL(await res.blob());
+                const au = new Audio(url);
+                au.onended = () => URL.revokeObjectURL(url);
+                await au.play();
+            } catch (err) { alert(err.message); } finally { vPreview.disabled = false; }
+        });
         const permWarn = el('small', { class: 'agents-warn',
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
@@ -300,6 +334,9 @@
             field('Type', kind),
             apiBox, cliBox, toolsBox,
             field('Role / instructions (from you)', prompt),
+            el('div', { class: 'agents-field' }, el('span', { text: 'Voice (read aloud and conversations)' }),
+                el('div', { class: 'agents-inline' }, field('Provider', vProvider), field('Voice', vVoice), field('Speed', vSpeed), vPreview),
+                el('small', { text: 'Providers and cloned voices are managed in Settings › Voice.' })),
             field('Persona (the agent\'s own identity; it can rewrite this itself)', persona,
                 'Kept across restarts and New context. Duplicates and spawns start without one.'),
             el('div', { class: 'agents-field' },
@@ -319,6 +356,7 @@
                 channels: chanBoxes.filter(x => x.cb.checked).map(x => x.c),
                 cwd: cwd.value.trim(), permissions: perm.value,
                 allowed_commands: allowedCmds.value.split(',').map(x => x.trim()).filter(Boolean),
+                voice_provider: vProvider.value, voice: vVoice.value, voice_speed: Number(vSpeed.value) || null,
             };
             if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {

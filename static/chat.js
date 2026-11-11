@@ -35,7 +35,7 @@ Object.defineProperty(window, 'SESSION_TOKEN', { get() { return SESSION_TOKEN; }
 Object.defineProperty(window, 'activeChannel', { get() { return activeChannel; } });
 Object.defineProperty(window, 'channelList', { get() { return channelList; }, set(v) { channelList = v; } });
 Object.defineProperty(window, 'channelUnread', { get() { return channelUnread; }, set(v) { channelUnread = v; } });
-window._setActiveChannel = function(v) { activeChannel = v; };
+window._setActiveChannel = function(v) { activeChannel = v; window.dispatchEvent(new Event('agenthub-channel')); };
 window._setPendingChannelSwitch = function(v) { pendingChannelSwitch = v; };
 // scrollToBottom is set after function definition (see below)
 Object.defineProperty(window, 'username', { get() { return username; } });

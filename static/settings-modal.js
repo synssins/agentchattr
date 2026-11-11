@@ -21,6 +21,7 @@
         { id: 'mcp', label: 'MCP servers', render: renderMcp },
         { id: 'apikeys', label: 'API keys', render: renderApiKeys },
         { id: 'secrets', label: 'Secrets', render: renderSecrets },
+        { id: 'voice', label: 'Voice', render: renderVoice },
         { id: 'irc', label: 'IRC', render: renderIrc },
         { group: 'Data' },
         { id: 'metrics', label: 'Usage', render: renderMetrics },
@@ -236,6 +237,91 @@
                 } }))])));
         panel.append(el('p', { class: 'settings-intro', text:
             'Limit: all agents run as the same Linux user on this server. Claude Code agents are blocked from reading AgentHub\'s data folder with their file tools, but an agent with Full access could still find a secret through the shell. Scope tokens narrowly (e.g. a fine-grained GitHub token for one repo).' }));
+    }
+
+    // ------------------------------------------------------------ Voice
+    async function renderVoice(panel) {
+        heading(panel, 'Voice',
+            'Speech providers for reading messages aloud and for conversations (any OpenAI-style /audio/speech service), the speech-to-text server, and cloned voices. Each agent picks its provider, voice and speed on its own page under Agents.');
+        let conf;
+        try { conf = await api('GET', '/api/voice/config'); } catch (err) {
+            panel.append(el('p', { class: 'agents-warn', text: err.message })); return;
+        }
+        const rows = conf.providers.map(p => ({ ...p }));
+        const list = el('div');
+        const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format (mp3, wav)'],
+            ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL (cloning)'], ['default_voice', 'Default voice']];
+        const def = el('select', { 'aria-label': 'Default provider' });
+        const draw = () => {
+            list.textContent = '';
+            rows.forEach((r, i) => {
+                const box = el('fieldset', { class: 'agents-group' }, el('legend', { text: r.name || 'New provider' }));
+                const grid = el('div', { class: 'agents-inline' });
+                for (const [k, label] of fieldsOf) {
+                    const inp = el('input', { value: r[k] || '', 'aria-label': label });
+                    inp.addEventListener('input', () => { r[k] = inp.value; });
+                    grid.append(el('label', { class: 'agents-field' }, el('span', { text: label }), inp));
+                }
+                const key = el('input', { type: 'password', placeholder: r.has_key ? 'stored (leave blank to keep)' : 'none', autocomplete: 'off' });
+                key.addEventListener('input', () => { r.api_key = key.value; });
+                grid.append(el('label', { class: 'agents-field' }, el('span', { text: 'API key' }), key));
+                const err = (conf.voices[r.name] || {}).error;
+                const count = (conf.voices[r.name] || {}).voices?.length;
+                box.append(grid, el('small', { class: err ? 'agents-warn' : '', text: err ? `Unreachable: ${err}` : count != null ? `${count} voices` : '' }),
+                    el('button', { type: 'button', class: 'agents-btn danger', text: 'Remove', onclick: () => { rows.splice(i, 1); draw(); } }));
+                list.append(box);
+            });
+            def.textContent = '';
+            def.append(...rows.filter(r => r.name).map(r => el('option', { value: r.name, text: r.name })));
+            def.value = conf.default_provider;
+        };
+        draw();
+        const stt = el('input', { value: conf.stt.wyoming, placeholder: 'host:port' });
+        const lang = el('input', { value: conf.stt.language || 'en', placeholder: 'en' });
+        const save = el('button', { type: 'button', class: 'agents-btn primary', text: 'Save voice settings' });
+        save.onclick = async () => {
+            try {
+                await api('POST', '/api/voice/config', { providers: rows, default_provider: def.value,
+                    stt: { wyoming: stt.value.trim(), language: lang.value.trim() } });
+                show('voice');
+            } catch (err) { alert(err.message); }
+        };
+        panel.append(list,
+            el('button', { type: 'button', class: 'agents-btn', text: '+ Add provider', onclick: () => {
+                rows.push({ name: '', base_url: '', format: 'mp3' }); draw(); } }),
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Default provider' }), def),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Speech-to-text (Wyoming Whisper)' }), stt),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Language' }), lang)),
+            el('div', { class: 'agents-actions' }, save));
+
+        // Clone a voice from a short sample
+        const cloneable = conf.providers.filter(p => (conf.voices[p.name] || {}).clone);
+        if (!cloneable.length) return;
+        const cp = el('select', { 'aria-label': 'Provider' }, ...cloneable.map(p => el('option', { value: p.name, text: p.name })));
+        const cn = el('input', { placeholder: 'e.g. Narrator' });
+        const cf = el('input', { type: 'file', accept: 'audio/*' });
+        const go = el('button', { type: 'button', class: 'agents-btn primary', text: 'Clone voice' });
+        const note = el('small', { role: 'status' });
+        go.onclick = async () => {
+            if (!cf.files[0] || !cn.value.trim()) { note.textContent = 'Give the voice a name and pick a sample.'; return; }
+            const form = new FormData();
+            form.append('provider', cp.value); form.append('name', cn.value.trim()); form.append('file', cf.files[0]);
+            go.disabled = true; note.textContent = 'Uploading…';
+            try {
+                const res = await fetch('/api/voice/clone', { method: 'POST', headers: { 'X-Session-Token': window.SESSION_TOKEN }, body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'cloning failed');
+                note.textContent = `Added "${data.name}". Pick it on an agent's page.`;
+            } catch (err) { note.textContent = err.message; } finally { go.disabled = false; }
+        };
+        panel.append(el('h3', { text: 'Clone a voice' }),
+            el('p', { class: 'agents-sub', text: 'Upload 10 to 30 seconds of one person speaking clearly, without music or background noise. Only clone voices you have permission to use.' }),
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Provider' }), cp),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Voice name' }), cn),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Sample' }), cf), go),
+            note);
     }
 
     // ------------------------------------------------------------ Rulebooks

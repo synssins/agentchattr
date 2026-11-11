@@ -2463,6 +2463,112 @@ async def managed_agents_list():
     return JSONResponse(agent_manager.list() if agent_manager else [])
 
 
+# --- Voice: text-to-speech, speech-to-text, voice library (voice.py) ---
+
+def _voice_public(conf: dict) -> dict:
+    """Voice config for the browser: API keys are never sent back."""
+    return {**conf, "providers": [{k: v for k, v in p.items() if k != "api_key"} | {"has_key": bool(p.get("api_key"))}
+                                  for p in conf["providers"]]}
+
+
+@app.get("/api/voice/config")
+async def voice_config():
+    import voice
+    return {**_voice_public(voice.load()), "voices": await asyncio.to_thread(voice.voices)}
+
+
+@app.post("/api/voice/config")
+async def voice_config_save(request: Request):
+    """Body: {providers: [...], default_provider, stt}. A provider sent without api_key keeps its stored key."""
+    import voice
+    body = await request.json()
+    old = {p["name"]: p for p in voice.load()["providers"]}
+    providers = []
+    for p in body.get("providers") or []:
+        name = str(p.get("name", "")).strip()[:40]
+        if not name or not str(p.get("base_url", "")).startswith(("http://", "https://")):
+            return JSONResponse({"error": "each provider needs a name and an http(s) base URL"}, status_code=400)
+        keep = {k: str(p[k]).strip() for k in ("base_url", "model", "format", "voices_url", "clone_url", "default_voice")
+                if p.get(k)}
+        key = p.get("api_key") or old.get(name, {}).get("api_key")
+        providers.append({"name": name, **keep, **({"api_key": key} if key else {})})
+    if not providers:
+        return JSONResponse({"error": "keep at least one provider"}, status_code=400)
+    conf = voice.load()
+    conf["providers"] = providers
+    names = [p["name"] for p in providers]
+    conf["default_provider"] = body.get("default_provider") if body.get("default_provider") in names else names[0]
+    if isinstance(body.get("stt"), dict) and ":" in str(body["stt"].get("wyoming", "")):
+        conf["stt"] = {"wyoming": str(body["stt"]["wyoming"]).strip(), "language": str(body["stt"].get("language") or "en")[:8]}
+    voice.save(conf)
+    return await voice_config()
+
+
+@app.post("/api/voice/speak")
+async def voice_speak(request: Request):
+    """Body: {text, agent?}. The agent's own voice (agent page) is used when it has one."""
+    import voice
+    from fastapi.responses import Response
+    body = await request.json()
+    spec = (agent_manager.specs.get(str(body.get("agent") or "").lower()) if agent_manager else None) or {}
+    try:
+        audio, media = await asyncio.to_thread(voice.speak, str(body.get("text") or ""), spec.get("voice_provider"),
+                                               spec.get("voice"), spec.get("voice_speed"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": f"speech failed: {str(exc)[:200]}"}, status_code=502)
+    return Response(audio, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/voice/preview")
+async def voice_preview(request: Request):
+    """Body: {text, provider, voice, speed}: try a voice before saving it on an agent."""
+    import voice
+    body = await request.json()
+    try:
+        audio, media = await asyncio.to_thread(voice.speak, str(body.get("text") or "Hello.")[:300],
+                                               body.get("provider") or None, body.get("voice") or None,
+                                               body.get("speed") or None)
+    except Exception as exc:
+        return JSONResponse({"error": f"preview failed: {str(exc)[:200]}"}, status_code=400)
+    return Response(audio, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(request: Request):
+    """Body: a 16-bit WAV recording. -> {text}"""
+    import voice
+    audio = await request.body()
+    if not audio or len(audio) > 25 * 1024 * 1024:
+        return JSONResponse({"error": "send a WAV recording up to 25 MB"}, status_code=400)
+    try:
+        return {"text": await asyncio.to_thread(voice.transcribe, audio)}
+    except Exception as exc:
+        return JSONResponse({"error": f"transcription failed: {str(exc)[:200]}"}, status_code=502)
+
+
+@app.post("/api/voice/clone")
+async def voice_clone(request: Request):
+    """Multipart: provider, name, file (a 10-30 s clean speech sample)."""
+    import voice
+    form = await request.form()
+    f = form.get("file")
+    if f is None or not hasattr(f, "read"):
+        return JSONResponse({"error": "attach a voice sample"}, status_code=400)
+    sample = await f.read()
+    if len(sample) > 20 * 1024 * 1024:
+        return JSONResponse({"error": "the sample is larger than 20 MB"}, status_code=400)
+    try:
+        name = await asyncio.to_thread(voice.clone, str(form.get("provider") or ""), str(form.get("name") or ""),
+                                       getattr(f, "filename", "") or "sample.wav", sample)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": f"cloning failed: {str(exc)[:200]}"}, status_code=502)
+    return {"name": name, **(await voice_config())}
+
+
 @app.get("/api/managed-agents/health")
 async def managed_agents_health():
     """Agent health panel: endpoint reachability, busy/queued, last success and error."""

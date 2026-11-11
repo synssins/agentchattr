@@ -64,6 +64,8 @@ def main():
     # Rulebooks (style/process guides), mirrored to ./rulebooks/*.md for CLI agents
     import rulebooks
     rulebooks.setup(config, ROOT)
+    import voice
+    voice.setup(config)
 
     # Settings back end: /v1 keys, self-registration, /llms.txt, IRC
     import admin_api
