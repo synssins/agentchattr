@@ -324,6 +324,14 @@ class AttachmentTest(unittest.TestCase):
         text = self.r._text(self.store.get_recent(1)[0])
         self.assertIn(f"[attached image image.png: {self.updir.resolve() / 'abc.png'}]", text)
 
+    def test_masked_image_gets_inpaint_hint(self):
+        self.assertNotIn(agent_runner.MASK_HINT, self.r._text(self.store.get_recent(1)[0]))
+        self.store.add("alice", "@qwen make it chrome", attachments=[
+            {"name": "masked-cat.png", "url": "/uploads/abc.png", "kind": "image"}])
+        text = self.r._text(self.store.get_recent(1)[0])
+        self.assertIn("[attached image masked-cat.png:", text)
+        self.assertIn(agent_runner.MASK_HINT, text)
+
     def test_api_agent_gets_image_inline_then_text_only_fallback(self):
         import urllib.error
         calls = []
