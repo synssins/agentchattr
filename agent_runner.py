@@ -122,6 +122,8 @@ MEMORY_PROMPT = ("You keep the running memory of a group chat for the agent {nam
 MEMORY_INPUT = 24000       # chars of new transcript per compaction (the newest are kept)
 MEMORY_MAX = 4000          # chars of memory kept
 TOOL_BUDGET = 40000        # chars of tool output in one turn before older results are trimmed
+STOP_NOTE = ("(Room note: the owner stopped your turn here. Drop the request you were working on; "
+             "don't resume it unless someone asks again.)")
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -379,12 +381,51 @@ class Runner:
         except Exception:
             log.exception("deregister %s", self.name)
 
+    def health(self) -> dict:
+        """Agent health panel: is the model reachable, is it busy, what failed last."""
+        spec = self.spec
+        q = Path(self.m.data_dir) / f"{self.name}_queue.jsonl"
+        try:
+            queued = sum(1 for line in q.read_text("utf-8").splitlines() if line.strip())
+        except OSError:
+            queued = 0
+        out = {"name": self.name, "kind": spec.get("kind"), "model": spec.get("model") or "",
+               "enabled": spec.get("enabled", True) is not False, "working": self.working, "queued": queued,
+               "last_ok": getattr(self, "last_ok", None), "last_error": getattr(self, "last_error", None)}
+        if spec.get("kind") == "api":
+            base = (spec.get("base_url") or "").rstrip("/")
+            key = spec.get("api_key", "")
+            headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"} if spec.get("api_format") == "anthropic"
+                       else {"Authorization": f"Bearer {key}"} if key else {})
+            t0 = time.monotonic()
+            try:
+                with urllib.request.urlopen(urllib.request.Request(f"{base}/models", headers=headers), timeout=4):
+                    pass
+                out["endpoint"] = {"up": True, "ms": int((time.monotonic() - t0) * 1000)}
+            except urllib.error.HTTPError as exc:  # it answered: up, maybe without a models list
+                out["endpoint"] = {"up": exc.code < 500 and exc.code not in (401, 403),
+                                   "error": f"HTTP {exc.code}"}
+            except Exception as exc:
+                out["endpoint"] = {"up": False, "error": str(getattr(exc, "reason", exc))[:120]}
+        else:
+            exe = _which(spec.get("command") or spec.get("kind") or "")
+            out["endpoint"] = {"up": bool(exe), **({} if exe else {"error": "command not found"})}
+        return out
+
     def halt_turn(self):
         """/stop: kill the CLI or tool process group now; an API reply still in flight is
         dropped when it arrives (urllib can't be interrupted). The queue is cleared by the caller."""
         self.halt.set()
         for p in (self.proc, getattr(self.tools, "proc", None)):
             kill_group(p)
+        ch = getattr(self, "channel", None)
+        if self.working and ch and self.spec.get("kind") == "api" and self.thread is None:
+            # API agents rebuild context from the log: mark where they were stopped
+            last = [m["id"] for m in self.m.hub.store.get_recent(1, channel=ch)]
+            if last:
+                with self.m.lock:
+                    self.m.state.setdefault(self.name, {}).setdefault("stopped", {})[ch] = last[0]
+                self.m.save_state()
 
     def _heartbeat(self):
         import mcp_bridge
@@ -565,6 +606,7 @@ class Runner:
         # own triggers one at a time: messages for a busy agent wait in its queue.
         hub = self.m.hub
         self.thread = thread  # read by _api_turn/_cli_turn/_addressed; the reply goes back there
+        self.channel = channel  # read by halt_turn
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
@@ -597,6 +639,7 @@ class Runner:
             for prefix in (f"{self.name}: ", f"{self.name}:"):
                 if reply.startswith(prefix):
                     reply = reply[len(prefix):].strip()
+            self.last_ok = time.time()
             if (reply and reply != NO_REPLY) or attachments:
                 hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
                               attachments=attachments, thread=thread)
@@ -613,6 +656,7 @@ class Runner:
             if isinstance(exc, TimeoutError) or "timed out" in why:
                 why = (f"no answer within {_timeout(self.spec)} s (the model may still have been "
                        "generating; raise Timeout in Settings > Agents)")
+            self.last_error = {"at": time.time(), "channel": channel, "why": why}
             hub.store.add("system", f"{self.name} failed: {why}", msg_type="system", channel=channel)
         finally:
             self.working = False
@@ -685,6 +729,11 @@ class Runner:
                         except OSError:
                             pass
                 msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
+            stop_id = ((getattr(self.m, "state", None) or {}).get(self.name, {}).get("stopped") or {}).get(channel)
+            if stop_id is not None and self.thread is None:
+                at = sum(1 for m in history if m["id"] <= stop_id)
+                if at:
+                    msgs.insert(at, {"role": "user", "content": STOP_NOTE})
             # Always the same first line (a fixed prompt start caches; Anthropic also needs a user turn first)
             mem = self.memory(channel).get("text")
             msgs.insert(0, {"role": "user", "content": f"(Earlier conversation, from your memory notes:)\n{mem}"

@@ -12,6 +12,7 @@ const Control = (() => {
     const ICON = {
         smile: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>',
         thread: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12z"/><path d="M8.5 10.5h7M8.5 14h4.5"/></svg>',
+        clip: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 12-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.8 1.8 0 0 1-2.6-2.6l8.5-8.5"/></svg>',
         stop: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
         close: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
         send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
@@ -187,18 +188,30 @@ const Control = (() => {
         p.innerHTML = `<div class="ctl-thread-header"><span class="ctl-thread-title">Thread</span><span class="ctl-thread-channel"></span>
                 <button type="button" class="ctl-icon-btn ctl-thread-close" aria-label="Close thread" title="Close (Esc)">${ICON.close}</button></div>
             <div class="ctl-thread-body"></div>
+            <div class="ctl-thread-files"></div>
+            <div class="ctl-thread-mentions mention-menu hidden" role="listbox" aria-label="Mention"></div>
             <form class="ctl-thread-composer">
+                <button type="button" class="ctl-icon-btn ctl-thread-attach" aria-label="Attach files" title="Attach files">${ICON.clip}</button>
+                <input type="file" multiple hidden>
                 <textarea rows="1" placeholder="Reply in thread..." aria-label="Reply in thread"></textarea>
                 <button type="submit" class="ctl-icon-btn ctl-thread-send" aria-label="Send reply">${ICON.send}</button>
             </form>`;
         p.querySelector('.ctl-thread-close').onclick = close;
         const ta = p.querySelector('textarea');
         const form = p.querySelector('form');
+        const picker = p.querySelector('input[type=file]');
+        p.querySelector('.ctl-thread-attach').onclick = () => picker.click();
+        picker.onchange = () => { addFiles(Array.from(picker.files)); picker.value = ''; };
         form.onsubmit = (e) => { e.preventDefault(); send(ta); };
         ta.addEventListener('keydown', (e) => {
+            if (mentionKey(e, ta)) return;
             if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(ta); }
         });
-        ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`; });
+        ta.addEventListener('input', () => {
+            ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+            mentionMenu(ta);
+        });
+        ta.addEventListener('blur', () => setTimeout(() => hideMentions(), 150));
         (document.getElementById('content-area') || document.body).appendChild(p);
         return p;
     }
@@ -233,15 +246,97 @@ const Control = (() => {
         return true;
     }
 
+    // ---- thread composer: attachments ----
+    let threadFiles = [], uploading = 0;
+
+    function renderFiles() {
+        const box = document.querySelector('#ctl-thread-panel .ctl-thread-files');
+        if (!box) return;
+        box.innerHTML = '';
+        threadFiles.forEach((att, i) => box.appendChild(createAttachmentPreview(att, () => {
+            threadFiles.splice(i, 1); renderFiles();
+        })));
+        if (uploading) box.append(Object.assign(document.createElement('span'), { className: 'ctl-thread-uploading', textContent: 'Uploading…' }));
+    }
+
+    async function addFiles(files) {
+        for (const f of files) {
+            uploading++; renderFiles();
+            try { threadFiles.push(await uploadAttachment(f)); }
+            catch (err) { alert(`${f.name}: ${err.message}`); }
+            finally { uploading--; renderFiles(); }
+        }
+    }
+
+    // ---- thread composer: @-autocomplete (same candidates as the main composer) ----
+    let mentionAt = -1, mentionIdx = 0, mentionMatches = [];
+
+    function hideMentions() {
+        document.querySelector('#ctl-thread-panel .ctl-thread-mentions')?.classList.add('hidden');
+        mentionMatches = [];
+    }
+
+    function mentionMenu(ta) {
+        const menu = document.querySelector('#ctl-thread-panel .ctl-thread-mentions');
+        const m = /(^|[^\w])@([\w-]*)$/.exec(ta.value.slice(0, ta.selectionStart));
+        const all = typeof getMentionCandidates === 'function' ? getMentionCandidates() : [];
+        mentionMatches = m ? all.filter(c => c.name.toLowerCase().startsWith(m[2].toLowerCase())
+                                         || c.label.toLowerCase().startsWith(m[2].toLowerCase())) : [];
+        if (!mentionMatches.length) return hideMentions();
+        mentionAt = ta.selectionStart - m[2].length - 1;
+        mentionIdx = Math.min(mentionIdx, mentionMatches.length - 1);
+        menu.innerHTML = '';
+        mentionMatches.forEach((c, i) => {
+            const row = document.createElement('div');
+            row.className = 'mention-item' + (i === mentionIdx ? ' active' : '');
+            row.setAttribute('role', 'option');
+            row.innerHTML = `<span class="mention-dot" style="background: ${c.color}"></span><span class="mention-name">${escapeHtml(c.label)}</span>`;
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); pickMention(ta, c.name); });
+            menu.appendChild(row);
+        });
+        menu.classList.remove('hidden');
+    }
+
+    function pickMention(ta, name) {
+        const tag = name === 'all agents' ? '@all ' : `@${name} `;
+        ta.value = ta.value.slice(0, mentionAt) + tag + ta.value.slice(ta.selectionStart);
+        ta.selectionStart = ta.selectionEnd = mentionAt + tag.length;
+        hideMentions();
+        ta.focus();
+    }
+
+    function mentionKey(e, ta) {
+        if (!mentionMatches.length) return false;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            mentionIdx = (mentionIdx + (e.key === 'ArrowDown' ? 1 : -1) + mentionMatches.length) % mentionMatches.length;
+            mentionMenu(ta);
+        } else if (e.key === 'Enter' || e.key === 'Tab') {
+            pickMention(ta, mentionMatches[mentionIdx].name);
+        } else if (e.key === 'Escape') {
+            hideMentions();
+        } else return false;
+        e.preventDefault();
+        e.stopPropagation();
+        return true;
+    }
+
     function send(ta) {
         const text = ta.value.trim();
         const parent = messages[openThread];
-        if (!text || !parent || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if ((!text && !threadFiles.length) || uploading || !parent || !ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: 'message', text, sender: me(), channel: parent.channel || 'general',
-                                 thread: parent.id, attachments: [] }));
+                                 thread: parent.id, attachments: threadFiles }));
         ta.value = '';
         ta.style.height = 'auto';
+        threadFiles = [];
+        renderFiles();
     }
+
+    // Paste/drop into an open thread lands in the thread composer (chat.js asks first)
+    window.ThreadComposer = {
+        owns: (node) => openThread !== null && !!(node && node.closest && node.closest('#ctl-thread-panel')),
+        add: addFiles,
+    };
 
     Hub.on('delete', (ev) => {
         for (const id of ev.ids || []) {

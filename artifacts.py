@@ -182,6 +182,21 @@ def render_for_agents(text: str, how: str = "artifact_read", inline: bool = Fals
     return TOKEN_RE.sub(sub, text)
 
 
+def render_plain(text: str) -> str:
+    """[artifact:<id>] -> a readable label for plain-text clients (IRC)."""
+    if not store or "[artifact:" not in (text or ""):
+        return text
+
+    def sub(m):
+        meta = store.get(m.group(1))
+        if not meta:
+            return m.group(0)
+        v = meta["versions"][-1]
+        return (f'[artifact "{meta["title"]}" ({meta["language"] or "text"}, {v["lines"]} lines, '
+                f'v{v["n"]}) - open it in the web chat]')
+    return TOKEN_RE.sub(sub, text)
+
+
 def can_access(name: str, meta: dict) -> bool:
     """Participants of the artifact's channel only (the owner is checked by the caller)."""
     am = getattr(hub, "agent_manager", None)

@@ -91,5 +91,37 @@ class Catalog(unittest.TestCase):
         self.assertIn("Fresh notes.", line)
 
 
+class Cancel(unittest.TestCase):
+    def test_timeout_cancels_the_prompt_it_queued(self):
+        from unittest import mock
+
+        class Resp:
+            def __init__(self, data, code=200):
+                self.status_code, self._d, self.text = code, data, ""
+            def json(self):
+                return self._d
+
+        class Client:
+            def __init__(self, *a, **k):
+                self.posts = []
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def post(self, url, json=None):
+                self.posts.append((url.rsplit("/", 1)[1], json))
+                return Resp({"prompt_id": "p1"})
+            def get(self, url):
+                return Resp({"queue_running": [[0, "p1"]]} if url.endswith("/queue") else {})
+
+        canceller = Client()
+        with mock.patch.object(c, "RUN_TIMEOUT", 0), mock.patch.object(c.httpx, "Client", lambda **k: canceller):
+            with self.assertRaises(TimeoutError):
+                c._run(Client(), {})
+        self.assertIn(("queue", {"delete": ["p1"]}), canceller.posts)
+        self.assertIn(("interrupt", {"prompt_id": "p1"}), canceller.posts)
+        self.assertEqual(c._pending, set())
+
+
 if __name__ == "__main__":
     unittest.main()

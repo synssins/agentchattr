@@ -303,7 +303,8 @@ class Gateway:
             self.join(c, ch)  # join() replays backlog, which includes msg
             return
         kind = msg.get("type", "chat")
-        text = msg.get("text", "")
+        import artifacts
+        text = artifacts.render_plain(msg.get("text", ""))
         for a in msg.get("attachments") or []:
             text += f"\n[attachment] {a.get('url') or a.get('name', '')}"
         ts = msg.get("timestamp")

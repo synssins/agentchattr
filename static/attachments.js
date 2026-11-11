@@ -3,6 +3,13 @@ function attachmentIsImage(att) {
     return att.kind === 'image' || (!att.kind && /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(att.url || ''));
 }
 
+function attachmentMedia(att) {
+    const t = att.media_type || '', n = att.name || att.url || '';
+    if (t.startsWith('video/') || /\.(mp4|webm|mov|m4v)$/i.test(n)) return 'video';
+    if (t.startsWith('audio/') || /\.(mp3|wav|ogg|oga|m4a|flac|opus)$/i.test(n)) return 'audio';
+    return '';
+}
+
 function attachmentSize(size) {
     if (!Number.isFinite(size)) return '';
     if (size < 1024) return `${size} B`;
@@ -26,7 +33,9 @@ function attachmentMarkup(att, pending = false) {
             <span class="file-attachment-detail">${escapeHtml(detail)}</span>
         </span>`;
     if (pending) return `<div class="file-attachment">${info}</div>`;
-    return `<a class="file-attachment" href="${url}" data-name="${name}" title="Download ${name}" aria-label="Download ${name}" onclick="downloadAttachment(event, this)">
+    const media = attachmentMedia(att);
+    const player = media ? `<${media} class="media-attachment" controls preload="metadata" src="${url}" title="${name}"></${media}>` : '';
+    return `${player}<a class="file-attachment" href="${url}" data-name="${name}" title="Download ${name}" aria-label="Download ${name}" onclick="downloadAttachment(event, this)">
         ${info}
         <svg class="file-download-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>

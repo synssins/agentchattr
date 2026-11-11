@@ -59,6 +59,31 @@ class Compaction(unittest.TestCase):
         r.forget("general")
         self.assertEqual(r.memory("general"), {})
 
+    def test_stopped_request_is_marked_in_the_next_context(self):
+        self.store.add("alice", "draw a cat")
+        r = agent_runner.Runner(self.mgr, "q")
+        r.working, r.channel, r.thread = True, "general", None
+        r.halt_turn()
+        r.working = False
+        r.halt.clear()
+        self.store.add("alice", "what time is it")
+        with mock.patch.object(agent_runner, "call_api_message", self.fake):
+            r._api_turn("general")
+        msgs = [m["content"] for m in self.calls[-1][1]]
+        stop = next(i for i, c in enumerate(msgs) if c == agent_runner.STOP_NOTE)
+        self.assertIn("draw a cat", msgs[stop - 1])
+        self.assertIn("what time is it", msgs[stop + 1])
+
+    def test_health_reports_unreachable_endpoint_queue_and_last_error(self):
+        r = agent_runner.Runner(self.mgr, "q")
+        self.mgr.specs["q"]["base_url"] = "http://127.0.0.1:9/v1"   # nothing listens on port 9
+        (Path(self.mgr.data_dir) / "q_queue.jsonl").write_text('{"c": "general"}\n', "utf-8")
+        r.last_error = {"at": 1, "channel": "general", "why": "boom"}
+        h = r.health()
+        self.assertFalse(h["endpoint"]["up"])
+        self.assertEqual(h["queued"], 1)
+        self.assertEqual(h["last_error"]["why"], "boom")
+
     def test_old_tool_output_is_trimmed_past_the_budget(self):
         msgs = [{"role": "tool", "content": "x" * 1000} for _ in range(5)]
         agent_runner._trim_tool_output(msgs, budget=3000, keep=2)

@@ -2765,7 +2765,10 @@ function setupPaste() {
 
         const files = Array.from(items).filter(item => item.kind === 'file')
             .map(item => item.getAsFile()).filter(Boolean);
-        if (files.length) {
+        if (files.length && window.ThreadComposer?.owns(document.activeElement)) {
+            e.preventDefault();
+            await window.ThreadComposer.add(files);
+        } else if (files.length) {
             e.preventDefault();
             await uploadFiles(files, isJobFocused);
         }
@@ -2806,6 +2809,7 @@ function setupDragDrop() {
         if (!files) return;
 
         const target = document.elementFromPoint(e.clientX, e.clientY) || e.target;
+        if (window.ThreadComposer?.owns(target)) return window.ThreadComposer.add(Array.from(files));
         const inJob = target.closest('#jobs-panel') &&
             !document.getElementById('jobs-conversation-view').classList.contains('hidden');
         await uploadFiles(Array.from(files), Boolean(inJob));

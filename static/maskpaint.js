@@ -184,6 +184,36 @@
         return name.replace(/\.[^.]+$/, '') || 'image';
     }
 
+    const CRC = Array.from({ length: 256 }, (_, n) => {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        return c >>> 0;
+    });
+
+    function chunk(type, data) {
+        const out = new Uint8Array(12 + data.length), dv = new DataView(out.buffer);
+        dv.setUint32(0, data.length);
+        for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+        out.set(data, 8);
+        let c = 0xffffffff;
+        for (let i = 4; i < 8 + data.length; i++) c = CRC[(c ^ out[i]) & 255] ^ (c >>> 8);
+        dv.setUint32(8 + data.length, (c ^ 0xffffffff) >>> 0);
+        return out;
+    }
+
+    // Straight (non-premultiplied) RGBA -> PNG blob.
+    async function encodePng(w, h, rgba) {
+        const raw = new Uint8Array(h * (w * 4 + 1));
+        for (let y = 0; y < h; y++) raw.set(rgba.subarray(y * w * 4, (y + 1) * w * 4), y * (w * 4 + 1) + 1);
+        const z = new Uint8Array(await new Response(new Blob([raw]).stream()
+            .pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+        const ihdr = new Uint8Array(13), dv = new DataView(ihdr.buffer);
+        dv.setUint32(0, w); dv.setUint32(4, h);
+        ihdr.set([8, 6, 0, 0, 0], 8);
+        return new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr),
+            chunk('IDAT', z), chunk('IEND', new Uint8Array(0))], { type: 'image/png' });
+    }
+
     async function useMask() {
         const w = canvas.width, h = canvas.height;
         const mask = ctx.getImageData(0, 0, w, h).data;
@@ -207,11 +237,12 @@
             painted += hit;
         }
         if (!painted) { status.textContent = 'Paint the area to change first.'; return; }
-        octx.putImageData(px, 0, 0);
         const use = bar.querySelector('.maskpaint-use');
         use.disabled = true;
         status.textContent = 'Preparing image…';
-        const blob = await new Promise((resolve) => out.toBlob(resolve, 'image/png'));
+        // Own PNG encoder: canvas.toBlob premultiplies alpha, which blacks out the pixels under the
+        // mask; partial-denoise inpaints need the original colours there.
+        const blob = await encodePng(w, h, px.data).catch(() => null);
         use.disabled = false;
         if (!blob) { status.textContent = 'Could not create the mask image.'; return; }
         const file = new File([blob], `masked-${originalName()}.png`, { type: 'image/png' });

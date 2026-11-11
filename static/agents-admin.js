@@ -94,7 +94,8 @@
                 el('div', { class: 'agents-info' },
                     el('div', { class: 'agents-name', text: `@${a.name}` }),
                     el('div', { class: 'agents-sub', text: (a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}`)
-                        + ' · #general' + (a.channels || []).map(c => ' #' + c).join('') })),
+                        + ' · #general' + (a.channels || []).map(c => ' #' + c).join('') }),
+                    el('div', { class: 'agents-health', 'data-agent': a.name, text: 'Checking…' })),
                 permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
@@ -102,6 +103,36 @@
             list.append(row);
         }
         d.append(list);
+        loadHealth(list);
+    }
+
+    function ago(t) {
+        const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+        return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+    }
+
+    // Health line per agent: endpoint up/down, busy and queued, last success, last error
+    async function loadHealth(list) {
+        let rows = [];
+        try { rows = await api('GET', '/api/managed-agents/health'); } catch { /* leave "Checking…" */ return; }
+        const by = Object.fromEntries(rows.map(h => [h.name, h]));
+        list.querySelectorAll('.agents-health').forEach(node => {
+            const h = by[node.dataset.agent];
+            node.textContent = '';
+            if (!h) { node.append(el('span', { class: 'agents-health-dot off' }), 'Not running'); return; }
+            const ep = h.endpoint || {};
+            const state = !ep.up ? 'down' : h.working ? 'busy' : 'up';
+            const bits = [ep.up ? (h.kind === 'api' ? `Endpoint up${ep.ms != null ? ` (${ep.ms} ms)` : ''}` : 'Ready')
+                                : `Endpoint down${ep.error ? `: ${ep.error}` : ''}`];
+            if (h.working) bits.push('working');
+            if (h.queued) bits.push(`${h.queued} queued`);
+            if (h.last_ok) bits.push(`last reply ${ago(h.last_ok)}`);
+            node.append(el('span', { class: `agents-health-dot ${state}`, 'aria-hidden': 'true' }), bits.join(' · '));
+            if (h.last_error) {
+                node.append(el('div', { class: 'agents-health-error',
+                    text: `Last error ${ago(h.last_error.at)} in #${h.last_error.channel}: ${h.last_error.why}` }));
+            }
+        });
     }
 
     // Less-used actions live in a "More" menu so each row stays on one line

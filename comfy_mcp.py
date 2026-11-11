@@ -38,6 +38,7 @@ from mcp.server.fastmcp import FastMCP
 
 import logging
 logging.getLogger("httpx").setLevel(logging.WARNING)  # stdio server: keep stderr quiet
+log = logging.getLogger("comfy_mcp")
 
 COMFY = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 WORKFLOWS = Path(os.environ.get("COMFY_WORKFLOWS", "/data/hermes/comfy-workflows"))
@@ -265,21 +266,50 @@ def _upload(client: httpx.Client, path: str) -> str:
     return f"{d['subfolder']}/{d['name']}" if d.get("subfolder") else d["name"]
 
 
+_pending: set[str] = set()  # prompts this process queued and still waits on
+
+
+def _cancel(pids) -> None:
+    """Drop prompts from ComfyUI's queue and interrupt one that is running, so a timed-out or
+    abandoned call doesn't leave the GPU busy (and its output in ComfyUI's folder)."""
+    pids = set(pids)
+    if not pids:
+        return
+    try:
+        with httpx.Client(timeout=5) as c:
+            c.post(f"{COMFY}/queue", json={"delete": sorted(pids)})
+            running = {r[1] for r in c.get(f"{COMFY}/queue").json().get("queue_running", [])}
+            for pid in pids & running:
+                c.post(f"{COMFY}/interrupt", json={"prompt_id": pid})
+    except Exception as exc:  # best effort: ComfyUI may be down
+        log.warning("could not cancel ComfyUI prompts %s: %s", pids, exc)
+
+
+def _cancel_pending(*_):
+    _cancel(list(_pending))
+    _pending.clear()
+
+
 def _run(client: httpx.Client, graph: dict) -> dict:
     r = client.post(f"{COMFY}/prompt", json={"prompt": graph, "client_id": uuid.uuid4().hex})
     if r.status_code != 200:
         raise RuntimeError(f"ComfyUI refused the workflow: {r.text[:1500]}")
     pid = r.json()["prompt_id"]
-    deadline = time.monotonic() + RUN_TIMEOUT
-    while time.monotonic() < deadline:
-        h = client.get(f"{COMFY}/history/{pid}").json().get(pid)
-        if h and h.get("status", {}).get("completed") or (h and h.get("status", {}).get("status_str") == "error"):
-            if h["status"].get("status_str") == "error":
-                msgs = [m for m in h["status"].get("messages", []) if m[0] == "execution_error"]
-                raise RuntimeError(f"ComfyUI error: {json.dumps(msgs)[:1500]}")
-            return h
-        time.sleep(1)
-    raise TimeoutError(f"ComfyUI did not finish within {RUN_TIMEOUT // 60} minutes (prompt {pid})")
+    _pending.add(pid)
+    try:
+        deadline = time.monotonic() + RUN_TIMEOUT
+        while time.monotonic() < deadline:
+            h = client.get(f"{COMFY}/history/{pid}").json().get(pid)
+            if h and h.get("status", {}).get("completed") or (h and h.get("status", {}).get("status_str") == "error"):
+                if h["status"].get("status_str") == "error":
+                    msgs = [m for m in h["status"].get("messages", []) if m[0] == "execution_error"]
+                    raise RuntimeError(f"ComfyUI error: {json.dumps(msgs)[:1500]}")
+                return h
+            time.sleep(1)
+        _cancel([pid])
+        raise TimeoutError(f"ComfyUI did not finish within {RUN_TIMEOUT // 60} minutes (prompt {pid}); cancelled it")
+    finally:
+        _pending.discard(pid)
 
 
 def _save_outputs(client: httpx.Client, history: dict) -> list[Path]:
@@ -436,4 +466,9 @@ def make_mask(image: str, target: str, grow: int = 8, invert: bool = False) -> s
 
 
 if __name__ == "__main__":
+    import atexit
+    import signal
+    # The hub ends this process when a call times out or the agent is stopped: cancel what we queued
+    atexit.register(_cancel_pending)
+    signal.signal(signal.SIGTERM, lambda *_: (_cancel_pending(), os._exit(0)))
     mcp.run()

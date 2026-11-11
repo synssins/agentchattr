@@ -2463,6 +2463,15 @@ async def managed_agents_list():
     return JSONResponse(agent_manager.list() if agent_manager else [])
 
 
+@app.get("/api/managed-agents/health")
+async def managed_agents_health():
+    """Agent health panel: endpoint reachability, busy/queued, last success and error."""
+    if not agent_manager:
+        return JSONResponse([])
+    runners = list(agent_manager.runners.values())
+    return JSONResponse(list(await asyncio.gather(*(asyncio.to_thread(r.health) for r in runners))))
+
+
 @app.post("/api/managed-agents")
 async def managed_agents_upsert(request: Request):
     try:
@@ -3042,6 +3051,9 @@ async def version_check():
     })
 
 
+MEDIA_UPLOAD_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".flac", ".opus"}
+
+
 @app.get("/uploads/{filename}")
 async def serve_upload(filename: str):
     upload_dir = Path(config.get("images", {}).get("upload_dir", "./uploads"))
@@ -3051,6 +3063,9 @@ async def serve_upload(filename: str):
     if filepath.is_file():
         if filepath.suffix.lower() in IMAGE_UPLOAD_EXTS:
             return FileResponse(filepath)
+        if filepath.suffix.lower() in MEDIA_UPLOAD_EXTS:  # real type so <video>/<audio> can play it; still a download
+            return FileResponse(filepath, filename=filepath.name,
+                                headers={"X-Content-Type-Options": "nosniff"})
         # Documents are downloads, never executable same-origin pages.
         return FileResponse(filepath, media_type="application/octet-stream",
                             filename=filepath.name,
