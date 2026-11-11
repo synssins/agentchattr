@@ -295,6 +295,7 @@ function renderMarkdown(text) {
     });
     // Escape angle brackets in non-code text only
     text = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (window.Artifacts) text = Artifacts.tokensToHtml(text);  // [artifact:<id>] -> card (code slots untouched)
     // Restore code blocks (angle brackets inside them stay unescaped)
     text = text.replace(/\x00C(\d+)\x00/g, function(_, i) { return codeSlots[parseInt(i)]; });
     // Restore paths
@@ -361,6 +362,7 @@ async function openPath(path) {
 }
 
 function addCodeCopyButtons(container) {
+    if (window.Artifacts) Artifacts.hydrate(container);
     const blocks = container.querySelectorAll('pre');
     for (const pre of blocks) {
         // Syntax colouring (highlight.js): the ```lang tag wins, otherwise a best guess

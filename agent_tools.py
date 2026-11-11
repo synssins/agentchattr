@@ -9,6 +9,7 @@ set through OpenAI-style function calling, run by the server on their behalf:
   write_file   create/overwrite a file     (edit, full)
   run_command  run a command               (full: any shell command;
                                             otherwise only `allowed_commands`)
+  artifact_read / artifact_update   shared code artifacts of the agent's channels
 
 Skills are discovered from ~/.agents/skills and ~/.claude/skills, so anything
 installed there shows up for every agent without config.
@@ -65,6 +66,10 @@ def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
         fn("read_file", "Read a text file. Relative paths start in your working directory.",
            {"path": s, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["path"]),
         fn("list_dir", "List the entries of a directory.", {"path": s}, ["path"]),
+        fn("artifact_read", "Read a shared code artifact from the chat (the [artifact <id> ...] items). "
+           "Latest version unless you give one.", {"id": s, "version": {"type": "integer"}}, ["id"]),
+        fn("artifact_update", "Post a new version of a shared artifact: the complete new text. "
+           "The channel sees the update.", {"id": s, "content": s, "note": s}, ["id", "content"]),
     ]
     if perm in ("edit", "full"):
         specs.append(fn("write_file", "Create or overwrite a text file.", {"path": s, "content": s},
@@ -78,7 +83,9 @@ def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
 
 
 class ToolRunner:
-    def __init__(self, cwd: str, perm: str, allowed: list[str], env: dict, protect: str):
+    def __init__(self, cwd: str, perm: str, allowed: list[str], env: dict, protect: str,
+                 agent: str = "", channel: str = "general"):
+        self.agent, self.channel = agent, channel  # who calls artifact_* (channel access check)
         self.cwd = Path(os.path.expanduser(cwd or "~"))
         self.perm, self.allowed, self.env = perm, allowed, env
         self.protect = Path(protect).resolve()
@@ -125,6 +132,15 @@ class ToolRunner:
     def t_list_dir(self, path: str = ".") -> str:
         p = self._path(path)
         return "\n".join(e.name + ("/" if e.is_dir() else "") for e in sorted(p.iterdir()))
+
+    def t_artifact_read(self, id: str, version: int | None = None) -> str:
+        # shortcut: run() cuts output at MAX_OUT chars, so very large artifacts arrive truncated; add paging if that bites
+        import artifacts
+        return artifacts.read_for(self.agent, id, version)
+
+    def t_artifact_update(self, id: str, content: str, note: str = "") -> str:
+        import artifacts
+        return artifacts.update_for(self.agent, id, content, note)
 
     def t_write_file(self, path: str, content: str) -> str:
         if self.perm not in ("edit", "full"):

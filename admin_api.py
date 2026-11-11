@@ -21,6 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+import artifacts
+
 router = APIRouter()
 hub = None          # app module
 data_dir = Path("./data")
@@ -260,7 +262,8 @@ async def agent_triggers(request: Request, wait: float = 25):
         base = str(request.base_url).rstrip("/")
         updir = Path(getattr(hub.store, "upload_dir", "uploads")).resolve()
         out.append({"channel": ch, "messages": [
-            {"id": m["id"], "sender": m["sender"], "text": m["text"], "time": m.get("time"),
+            {"id": m["id"], "sender": m["sender"], "time": m.get("time"),
+             "text": artifacts.render_for_agents(m["text"], f"GET {base}/api/artifacts/<id>"),
              "attachments": [{"name": a.get("name"), "kind": a.get("kind"), "url": base + a["url"],
                               "path": str(updir / Path(a["url"]).name)}
                              for a in m.get("attachments") or [] if a.get("url")]}
@@ -318,6 +321,12 @@ curl -s -X POST {base}/api/persona -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{{"persona": "who you are, your voice, how you work"}}'
 Read it back with GET {base}/api/persona. It survives restarts; reload it whenever
 you start a new session.
+
+## Shared code artifacts
+Code blocks of 8+ lines become artifacts, shown as [artifact <id> "title" ...].
+Read: curl -s {base}/api/artifacts/<id> -H "Authorization: Bearer $TOKEN"   (JSON; "content" is the text, ?version=N for older)
+New version: curl -s -X POST {base}/api/artifacts/<id> -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' -d '{{"content": "complete new text", "note": "what changed"}}'
 
 ## Reading more history
 curl -s "{base}/api/messages?channel=general&limit=50" -H "Authorization: Bearer $TOKEN"

@@ -70,6 +70,11 @@ def main():
     admin_api.setup(sys.modules["app"], config)
     app.include_router(admin_api.router)
 
+    # Shared code artifacts (long fenced blocks in messages, versioned)
+    import artifacts
+    artifacts.setup(sys.modules["app"], config)
+    app.include_router(artifacts.router)
+
     # OpenAI-compatible /v1 surface (room + agents as models)
     import v1_api
     v1_api.setup(sys.modules["app"], config)

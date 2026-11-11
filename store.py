@@ -21,6 +21,7 @@ class MessageStore:
         self._todo_callbacks: list = []  # called on todo changes
         self._delete_callbacks: list = []  # called on message deletion
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
+        self.transform = None  # callable(text, channel, sender) -> text; artifacts.setup sets it
         self._load()
         self._load_todos()
 
@@ -57,6 +58,11 @@ class MessageStore:
             timestamp: float | None = None,
             time_str: str | None = None,
             _bulk: bool = False) -> dict:
+        if self.transform and not _bulk:
+            try:
+                text = self.transform(text, channel=channel, sender=sender)
+            except Exception:
+                pass  # keep the message as written rather than lose it
         with self._lock:
             ts = timestamp if timestamp is not None else time.time()
             msg = {

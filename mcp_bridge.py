@@ -14,6 +14,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 
+import artifacts
+
 log = logging.getLogger(__name__)
 
 # Shared state — set by run.py before starting
@@ -88,6 +90,9 @@ _MCP_INSTRUCTIONS = (
     "When you notice a repeated correction, a cross-agent convention, or a preference that should persist, "
     "propose it as a rule via chat_rules(action='propose'). Keep rules short and imperative (max 160 chars). "
     "Don't propose trivial or session-specific things. chat_decision is an alias for chat_rules (backward compat).\n\n"
+    "Code blocks of 8+ lines in messages become shared artifacts, shown as [artifact <id> ...]. "
+    "Read one with chat_artifact_read(id) and post a new version (the complete new text) with "
+    "chat_artifact_update(id, content, note); the channel sees each update.\n\n"
     "Messages belong to channels (default: 'general'). Use the 'channel' parameter in chat_send and "
     "chat_read to target a specific channel. Omit channel or pass empty string to read from all channels.\n\n"
     "If you are addressed in chat, respond in chat — use chat_send to reply in the same channel. "
@@ -413,7 +418,7 @@ def _serialize_messages(msgs: list[dict]) -> str:
         entry = {
             "id": m["id"],
             "sender": m["sender"],
-            "text": m["text"],
+            "text": artifacts.render_for_agents(m["text"], "chat_artifact_read"),
             "type": m["type"],
             "time": m["time"],
             "channel": m.get("channel", "general"),
@@ -940,9 +945,29 @@ def chat_summary(
     return f"Unknown action: {action}. Valid actions: read, write."
 
 
+def chat_artifact_read(sender: str, id: str, version: int = 0, ctx: Context | None = None) -> str:
+    """Read a shared code artifact (the [artifact <id> ...] items in chat). Latest version
+    unless `version` (1, 2, ...) is given. Only artifacts of your channels."""
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    return artifacts.read_for(sender, id.strip(), version or None)
+
+
+def chat_artifact_update(sender: str, id: str, content: str, note: str = "",
+                         ctx: Context | None = None) -> str:
+    """Post a new version of a shared artifact. `content` is the complete new text;
+    `note` says what changed. The artifact's channel sees the update."""
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    return artifacts.update_for(sender, id.strip(), content, note)
+
+
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
     chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    chat_artifact_read, chat_artifact_update,
 ]
 
 
