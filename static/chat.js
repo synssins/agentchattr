@@ -106,13 +106,30 @@ function playCrossChannelSound() {
 }
 window.playCrossChannelSound = playCrossChannelSound;
 
+// Per-agent sound for the agent configuration page (stored in this browser, '' = default)
+window.AgentSound = {
+    options: SOUND_OPTIONS,
+    get: (name) => soundPrefs[(name || '').toLowerCase()] || '',
+    set(name, val) {
+        const key = (name || '').toLowerCase();
+        if (val) soundPrefs[key] = val; else delete soundPrefs[key];
+        localStorage.setItem('agentchattr-sounds', JSON.stringify(soundPrefs));
+    },
+    preview(val) {
+        if (!val || val === 'none') return;
+        if (!soundCache[val]) soundCache[val] = new Audio(`/static/sounds/${val}.mp3`);
+        soundCache[val].currentTime = 0;
+        soundCache[val].play().catch(() => {});
+    },
+};
+
 function buildSoundSettings() {
     const container = document.getElementById('sound-settings');
     if (!container) return;
     container.innerHTML = '';
 
-    // Default sound + cross-channel sound + per-agent rows
-    const agents = ['default', 'cross-channel', ...Object.keys(agentConfig)];
+    // Room-wide sounds; each agent's own sound is set on its page under Settings > Agents
+    const agents = ['default', 'cross-channel'];
     for (const name of agents) {
         const row = document.createElement('div');
         row.className = 'sound-row';
@@ -2073,6 +2090,10 @@ function applySettings(data) {
     if (data.history_limit !== undefined) {
         document.getElementById('setting-history').value = String(data.history_limit);
     }
+    if (data.theme) {
+        applyTheme(data.theme);
+        document.getElementById('setting-theme').value = data.theme;
+    }
     if (data.contrast) {
         document.body.classList.toggle('high-contrast', data.contrast === 'high');
         document.getElementById('setting-contrast').value = data.contrast;
@@ -2178,6 +2199,17 @@ function clearChat() {
     setTimeout(() => document.addEventListener('click', _clearChatOutsideClick, true), 0);
 }
 
+const THEMES = ['charcoal', 'graphite', 'midnight', 'light'];
+const HLJS_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/';
+
+function applyTheme(theme) {
+    if (!THEMES.includes(theme)) theme = 'charcoal';
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem('agentchattr-theme', theme); } catch (e) { /* private mode */ }
+    const link = document.getElementById('hljs-theme');
+    if (link) link.href = HLJS_CSS + (theme === 'light' ? 'github.min.css' : 'github-dark.min.css');
+}
+
 function saveSettings() {
     const newUsername = document.getElementById('setting-username').value.trim();
     const newSubtitle = document.getElementById('setting-subtitle').value.trim();
@@ -2186,6 +2218,7 @@ function saveSettings() {
     const histVal = document.getElementById('setting-history').value;
     const newHistory = histVal === 'all' ? 'all' : (parseInt(histVal) || 50);
     const newContrast = document.getElementById('setting-contrast').value;
+    const newTheme = document.getElementById('setting-theme').value;
     const newRulesRefresh = document.getElementById('setting-rules-refresh').value;
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2198,6 +2231,7 @@ function saveSettings() {
                 max_agent_hops: Number.isNaN(parseInt(newHops)) ? 4 : parseInt(newHops),  // 0 = off
                 history_limit: newHistory,
                 contrast: newContrast,
+                theme: newTheme,
                 rules_refresh_interval: parseInt(newRulesRefresh) || 0,
             }
         }));
@@ -2221,9 +2255,10 @@ function setupSettingsKeys() {
     }
 
     // Auto-save on change for selects, escape to close
-    for (const id of ['setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
+    for (const id of ['setting-theme', 'setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
         const el = document.getElementById(id);
         el.addEventListener('change', () => {
+            if (id === 'setting-theme') applyTheme(el.value);
             // Apply contrast immediately (don't wait for server round-trip)
             if (id === 'setting-contrast') {
                 document.body.classList.toggle('high-contrast', el.value === 'high');

@@ -6,17 +6,28 @@
     const { el, api } = window.SettingsUI;
 
     const SECTIONS = [
-        { id: 'general', label: 'General', render: renderGeneral },
+        { group: 'You' },
+        { id: 'appearance', label: 'Appearance', render: (p) => renderBar(p, 'appearance', 'Appearance',
+            'Theme, type and layout for this room. Changes save automatically.') },
+        { id: 'notifications', label: 'Notifications', render: (p) => renderBar(p, 'notifications', 'Notifications',
+            'Sounds for new messages, stored in this browser. Each agent can have its own sound on its page under Agents.') },
+        { group: 'Room' },
+        { id: 'chat', label: 'Chat', render: (p) => renderBar(p, 'chat', 'Chat',
+            'Your name, the server label, and how agents take turns. Loop guard: agent-to-agent hops before the room pauses for you (0 = off).') },
         { id: 'agents', label: 'Agents', render: (p) => window.AgentsSection.mount(p) },
-        { id: 'connections', label: 'Connections', render: renderConnections },
-        { id: 'apikeys', label: 'API keys', render: renderApiKeys },
         { id: 'rulebooks', label: 'Rulebooks', render: renderRulebooks },
-        { id: 'secrets', label: 'Secrets', render: renderSecrets },
+        { group: 'Integrations' },
+        { id: 'connections', label: 'Agent access', render: renderConnections },
         { id: 'mcp', label: 'MCP servers', render: renderMcp },
+        { id: 'apikeys', label: 'API keys', render: renderApiKeys },
+        { id: 'secrets', label: 'Secrets', render: renderSecrets },
         { id: 'irc', label: 'IRC', render: renderIrc },
-        { id: 'metrics', label: 'Metrics', render: renderMetrics },
+        { group: 'Data' },
+        { id: 'metrics', label: 'Usage', render: renderMetrics },
+        { id: 'history', label: 'History', render: (p) => renderBar(p, 'history', 'History',
+            'Export this room (messages, jobs, rules, summaries) as a zip, or import one.') },
     ];
-    let current = 'general';
+    let current = 'appearance';
 
     function dialog() {
         let d = document.getElementById('settings-dialog');
@@ -25,6 +36,7 @@
         const nav = el('nav', { class: 'settings-nav', 'aria-label': 'Settings categories' },
             el('div', { class: 'settings-nav-title', text: 'Settings' }));
         for (const s of SECTIONS) {
+            if (s.group) { nav.append(el('div', { class: 'settings-nav-group', text: s.group })); continue; }
             nav.append(el('button', { class: 'settings-nav-item', 'data-section': s.id, text: s.label,
                 onclick: () => show(s.id) }));
         }
@@ -47,7 +59,7 @@
         if (bar && bar.parentElement === panel) document.body.append(bar);
         if (bar) bar.classList.add('hidden');
         panel.textContent = '';
-        SECTIONS.find(s => s.id === id).render(panel);
+        (SECTIONS.find(s => s.id === id) || SECTIONS[1]).render(panel);
     }
 
     function open(section) {
@@ -87,14 +99,15 @@
         return t;
     }
 
-    // ------------------------------------------------------------ General
-    function renderGeneral(panel) {
-        heading(panel, 'General', 'Your name in the room, appearance and loop guard. Changes save automatically.');
+    // ------------------------------------------------------------ Settings-bar groups
+    // The original settings bar keeps its event handlers; each section shows one group of its fields.
+    function renderBar(panel, group, title, intro) {
+        heading(panel, title, intro);
         const bar = document.getElementById('settings-bar');
-        if (bar) {
-            bar.classList.remove('hidden');
-            panel.append(bar);
-        }
+        if (!bar) return;
+        bar.querySelectorAll('[data-group]').forEach(f => { f.hidden = f.dataset.group !== group; });
+        bar.classList.remove('hidden');
+        panel.append(bar);
     }
 
     // ------------------------------------------------------------ Connections

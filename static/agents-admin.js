@@ -98,22 +98,32 @@
                 permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => renderForm(a) }),
-                el('button', { class: 'agents-btn', text: 'New context', title: 'Forget sessions and conversation; keep the persona',
-                    onclick: async () => {
-                        if (!confirm(`Give @${a.name} a fresh context? Its session memory is dropped; its persona stays.`)) return;
-                        agents = await api('POST', `/api/managed-agents/${encodeURIComponent(a.name)}/fresh`);
-                        renderList();
-                    } }),
-                el('button', { class: 'agents-btn', text: 'Duplicate', title: 'New instance with the same settings',
-                    onclick: () => renderForm({ ...a, name: '', label: '', persona: '', duplicateOf: a.name }) }),
-                el('button', { class: 'agents-btn danger', text: 'Delete', onclick: async () => {
-                    if (!confirm(`Delete ${a.name}? Its settings and session memory are removed; chat history stays.`)) return;
-                    agents = await api('DELETE', `/api/managed-agents/${encodeURIComponent(a.name)}`);
-                    renderList();
-                } }));
+                moreMenu(a));
             list.append(row);
         }
         d.append(list);
+    }
+
+    // Less-used actions live in a "More" menu so each row stays on one line
+    function moreMenu(a) {
+        const menu = el('details', { class: 'agents-more' });
+        const dots = el('summary', { class: 'agents-btn agents-more-btn', title: 'More actions', 'aria-label': `More actions for ${a.name}` });
+        dots.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="13" cy="8" r="1.5" fill="currentColor"/></svg>';
+        const item = (text, onclick, cls) => el('button', { class: 'agents-more-item' + (cls ? ' ' + cls : ''), text,
+            onclick: (e) => { menu.open = false; onclick(e); } });
+        menu.append(dots, el('div', { class: 'agents-more-list', role: 'menu' },
+            item('New context', async () => {
+                if (!confirm(`Give @${a.name} a fresh context? Its session memory is dropped; its persona stays.`)) return;
+                agents = await api('POST', `/api/managed-agents/${encodeURIComponent(a.name)}/fresh`);
+                renderList();
+            }),
+            item('Duplicate', () => renderForm({ ...a, name: '', label: '', persona: '', duplicateOf: a.name })),
+            item('Delete', async () => {
+                if (!confirm(`Delete ${a.name}? Its settings and session memory are removed; chat history stays.`)) return;
+                agents = await api('DELETE', `/api/managed-agents/${encodeURIComponent(a.name)}`);
+                renderList();
+            }, 'danger')));
+        return menu;
     }
 
     function providerLabel(a) {
@@ -154,6 +164,12 @@
             placeholder: 'e.g. claude, agy, qwen', readonly: editing });
         const label = el('input', { value: a.label || '', placeholder: 'Display name (optional)' });
         const color = el('input', { type: 'color', value: a.color || '#8b5cf6' });
+        const sound = el('select', { 'aria-label': 'Notification sound' });
+        const AS = window.AgentSound;
+        sound.append(el('option', { value: '', text: 'Room default' }));
+        (AS ? AS.options : []).forEach(o => sound.append(el('option', { value: o.value, text: o.label })));
+        sound.value = AS && a.name ? AS.get(a.name) : '';
+        sound.addEventListener('change', () => AS && AS.preview(sound.value));
         const kind = el('select');
         for (const [v, t] of Object.entries(KINDS)) kind.append(el('option', { value: v, text: t }));
         kind.value = a.kind || 'api';
@@ -244,7 +260,9 @@
 
         f.append(
             el('h2', { text: editing ? `Edit @${a.name}` : (a.duplicateOf ? `New instance of @${a.duplicateOf}` : 'Add agent') }),
-            el('div', { class: 'agents-inline' }, field('Name (@mention)', name), field('Label', label), field('Color', color)),
+            el('div', { class: 'agents-inline' }, field('Name (@mention)', name), field('Label', label)),
+            el('div', { class: 'agents-inline agents-inline-top' }, field('Color', color),
+                field('Notification sound', sound, 'Plays for this agent\'s messages, in this browser.')),
             field('Type', kind),
             apiBox, cliBox, toolsBox,
             field('Role / instructions (from you)', prompt),
@@ -278,11 +296,15 @@
             } else {
                 Object.assign(spec, { model: cliModel.value.trim() });
             }
-            await save(spec);
+            if (await save(spec) && window.AgentSound) window.AgentSound.set(spec.name, sound.value);
         });
         d.append(f);
         (editing ? prompt : name).focus();
     }
+
+    document.addEventListener('click', (e) => {
+        document.querySelectorAll('.agents-more[open]').forEach(m => { if (!m.contains(e.target)) m.open = false; });
+    });
 
     window.AgentsSection = { mount };
     window.SettingsUI = { el, api };

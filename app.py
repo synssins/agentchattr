@@ -57,8 +57,11 @@ room_settings: dict = {
     "channels": ["general"],
     "history_limit": "all",
     "contrast": "normal",
+    "theme": "charcoal",
     "custom_roles": [],
 }
+
+THEMES = ("charcoal", "graphite", "midnight", "light")
 
 # Channel validation
 _CHANNEL_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-]{0,19}$')
@@ -1431,6 +1434,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         pass
                 if "contrast" in new and new["contrast"] in ("normal", "high"):
                     room_settings["contrast"] = new["contrast"]
+                if new.get("theme") in THEMES:
+                    room_settings["theme"] = new["theme"]
                 if "rules_refresh_interval" in new:
                     try:
                         ri = int(new["rules_refresh_interval"])
