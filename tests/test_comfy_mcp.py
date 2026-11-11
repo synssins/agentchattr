@@ -74,5 +74,22 @@ class MaskGraph(unittest.TestCase):
         self.assertEqual(inv["8"]["class_type"], "InvertMask")
 
 
+
+class Catalog(unittest.TestCase):
+    def test_catalog_tag_model_and_best_use_replace_the_notes_excerpt(self):
+        info = {"content": "nsfw", "model": "Big Love KreaEdit2", "best_for": "plain-language edits"}
+        line = c._summary("Edit – Test", EDIT, "long workflow notes", info)
+        self.assertIn("| NSFW |", line)
+        self.assertIn("model: Big Love KreaEdit2", line)
+        self.assertIn("best for: plain-language edits", line)
+        self.assertNotIn("long workflow notes", line)
+
+    def test_uncatalogued_workflow_still_shows_its_model_files_and_notes(self):
+        g = dict(EDIT, m=node("UNETLoader", "Model", unet_name="BigLoveKreaEdit2_fp8mixed.safetensors"))
+        line = c._summary("New one", g, "Fresh notes.")
+        self.assertIn("model: BigLoveKreaEdit2_fp8mixed.safetensors", line)
+        self.assertIn("Fresh notes.", line)
+
+
 if __name__ == "__main__":
     unittest.main()

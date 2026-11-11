@@ -43,6 +43,9 @@ COMFY = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 WORKFLOWS = Path(os.environ.get("COMFY_WORKFLOWS", "/data/hermes/comfy-workflows"))
 OUT = Path(os.environ.get("COMFY_OUT", Path(__file__).with_name("generated")))
 NEXUS = os.environ.get("NEXUS_DIR", "/data/nexus/current")
+# Owner-editable descriptions per workflow (content tag, model, best use, hidden) + a selection guide
+CATALOG = Path(os.environ.get("COMFY_CATALOG", Path(__file__).with_name("data") / "comfy_catalog.json"))
+MODEL_KEYS = ("ckpt_name", "unet_name", "lora_name", "model_name", "control_net_name", "model")
 RUN_TIMEOUT = 20 * 60  # model loads on the T4 can take minutes
 TEXT_KEYS = ("text", "prompt", "text_g", "text_l", "value", "tags")  # value: PrimitiveString*, tags: ACE-Step
 SKIP_TITLES = re.compile(r"refin|template|random|wildcard", re.I)  # helper strings, not the prompt
@@ -167,7 +170,26 @@ def _about(notes: str, limit: int = 220) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "..."
 
 
-def _summary(name: str, graph: dict, notes: str) -> str:
+def _descriptions() -> dict:
+    try:
+        return json.loads(CATALOG.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}  # no catalog: workflows still list with their own notes
+
+
+def _models(graph: dict) -> list[str]:
+    """Model files the workflow loads (checkpoints, diffusion models, LoRAs, upscalers)."""
+    out = []
+    for n in graph.values():
+        for k in MODEL_KEYS:
+            v = n["inputs"].get(k)
+            if isinstance(v, str) and "." in v and v not in out:
+                out.append(v)
+    return out
+
+
+def _summary(name: str, graph: dict, notes: str, info: dict | None = None) -> str:
+    info = info or {}
     pos, neg = _text_nodes(graph)
     imgs = _image_nodes(graph)
     takes = (["prompt"] if pos else []) + (["negative"] if neg else [])
@@ -175,7 +197,11 @@ def _summary(name: str, graph: dict, notes: str) -> str:
         takes.append(f"{len(imgs)} input file(s): " + "; ".join(_title(graph[i]) for i in imgs))
     if any("Latent" in n["class_type"] and isinstance(n["inputs"].get("width"), int) for n in graph.values()):
         takes.append("width/height")
-    line = f"- {name} -> {'/'.join(_outputs(graph)) or 'output'} | takes: {', '.join(takes) or 'nothing'}"
+    tag = f" | {info['content'].upper()}" if info.get("content") else ""
+    line = f"- {name} -> {'/'.join(_outputs(graph)) or 'output'}{tag} | takes: {', '.join(takes) or 'nothing'}"
+    line += f"\n    model: {info.get('model') or ', '.join(_models(graph)) or '?'}"
+    if info.get("best_for"):
+        return line + f"\n    best for: {info['best_for']}"
     return line + (f"\n    {_about(notes)}" if notes.strip() else "")
 
 
@@ -274,18 +300,23 @@ def _save_outputs(client: httpx.Client, history: dict) -> list[Path]:
 # ------------------------------------------------------------------ tools
 
 @mcp.tool()
-def list_workflows(search: str = "") -> str:
-    """List the owner's ComfyUI workflows: what each one outputs, what it takes, and a short note on
-    what it is for. Always current: new or edited workflows saved in ComfyUI appear here.
-    `search` filters by name (e.g. "edit", "inpaint", "text to image", "upscale", "video")."""
-    lines = []
+def list_workflows(search: str = "", content: str = "") -> str:
+    """List the owner's ComfyUI workflows with what each one outputs, its content tag (NSFW = made for
+    adult content, NSFW-CAPABLE, SFW-LEANING, N/A), the model it uses, what it takes and what it is
+    best for, plus a short guide for choosing. Always current: new workflows saved in ComfyUI appear.
+    search: filter by name ("edit", "inpaint", "text to image", "upscale", "video", "big love").
+    content: filter by tag ("nsfw", "nsfw-capable", "sfw-leaning")."""
+    desc = _descriptions()
+    lines = [desc["_guide"], ""] if desc.get("_guide") and not search and not content else []
     with httpx.Client(timeout=60) as client:
         cat, loader = _catalog(client), Loader(client)
         for name, src in cat.items():
-            if search.lower() not in name.lower():
+            info = desc.get(name) or {}
+            if info.get("hidden") or search.lower() not in name.lower() \
+                    or (content and info.get("content", "").lower() != content.lower()):
                 continue
             try:
-                lines.append(_summary(name, *loader.load(src)))
+                lines.append(_summary(name, *loader.load(src), info))
             except (ValueError, OSError, httpx.HTTPError, ImportError) as exc:
                 lines.append(f"- {name} -> unavailable ({str(exc)[:160]})")
     return "\n".join(lines) or "No workflows match."
@@ -308,7 +339,10 @@ def describe_workflow(workflow: str) -> str:
                 for k, v in n["inputs"].items() if not isinstance(v, list)}
         if vals:
             rows.append(f"  {nid} '{_title(n)}' ({n['class_type']}): {json.dumps(vals, ensure_ascii=False)}")
-    return f"{_summary(name, graph, '')}\n\nNotes:\n{notes.strip() or '(none)'}\n\nSettings:\n" + "\n".join(rows)
+    head = _summary(name, graph, "", _descriptions().get(name))
+    files = ", ".join(_models(graph)) or "(none)"
+    return (f"{head}\n    model files: {files}\n\nNotes:\n{notes.strip() or '(none)'}\n\nSettings:\n"
+            + "\n".join(rows))
 
 
 @mcp.tool()
