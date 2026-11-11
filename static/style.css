@@ -5137,3 +5137,6 @@ a.file-attachment:hover { border-color: var(--accent); }
 .msg-text th, .job-msg-text th { background: var(--bg-elevated); color: var(--text-strong); }
 .msg-text tr:nth-child(even) td { background: var(--bg-subtle); }
 .agents-inline.agents-inline-top { align-items: flex-start; }
+
+/* Agent colours are picked for dark backgrounds; darken their names on Light so they stay readable */
+[data-theme="light"] :is(.msg-sender, .member-name) { filter: brightness(0.55) saturate(1.3); }
