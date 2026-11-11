@@ -3496,6 +3496,7 @@ function openImageModal(url) {
         modal.innerHTML = `<button class="modal-nav modal-prev" onclick="modalPrev(event)">&lsaquo;</button><img onclick="event.stopPropagation()"><button class="modal-nav modal-next" onclick="modalNext(event)">&rsaquo;</button><span class="modal-counter"></span>`;
         modal.addEventListener('click', closeImageModal);
         document.body.appendChild(modal);
+        if (window.maskPaintInit) maskPaintInit(modal);
     }
     updateModalImage(modal);
     modal.classList.remove('hidden');

@@ -46,6 +46,8 @@ RESUME_NOTE = ("(Your previous turn here was cut off by a server restart before 
                "carry on from there instead of starting over.)")
 ATTACH_RE = re.compile(r"\[attach:\s*([^\]\n]+)\]", re.I)
 MAX_ATTACH_BYTES = 25 * 1024 * 1024
+MASK_HINT = ("(An image named masked-*.png carries the area to change as transparency: "
+             "use an inpaint workflow with that file.)")
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 # New version of a shared artifact, for agents without the artifact_update tool
 ARTIFACT_UPDATE_RE = re.compile(r"\[artifact-update\s+([A-Za-z0-9_-]{6,24})\]\n?(.*?)\[/artifact-update\]", re.S | re.I)
@@ -415,6 +417,8 @@ class Runner:
         """Message text plus on-disk paths of its attachments (agents read them by path)."""
         extra = [f"[attached {'image' if a.get('kind') == 'image' else 'file'} "
                  f"{a.get('name', '')}: {path}]" for path, a in self._files(m)]
+        if any(re.fullmatch(r"masked-.*\.png", a.get("name", ""), re.I) for _, a in self._files(m)):
+            extra.append(MASK_HINT)
         import artifacts
         tools = self.spec.get("kind") == "api" and self.spec.get("api_format") != "anthropic"
         text = artifacts.render_for_agents(m.get("text", ""), "artifact_read", inline=not tools)

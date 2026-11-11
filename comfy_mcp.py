@@ -59,7 +59,8 @@ mcp = FastMCP("comfyui", instructions=(
     "list_workflows to see what each one does, describe_workflow for its notes and settings, then "
     "run_workflow. Edit, image-to-image, inpaint and upscale workflows need input image paths (chat "
     "attachments are on disk at the paths shown). Put the [attach: ...] lines from the result in "
-    "your reply so the images appear in the chat."))
+    "your reply so the images appear in the chat. An image named masked-*.png carries the area to "
+    "change as transparency: run an inpaint workflow with that file."))
 
 
 # ------------------------------------------------------------------ workflows
@@ -355,7 +356,8 @@ def run_workflow(workflow: str, prompt: str = "", negative: str = "", images: li
     prompt: what to make, or the edit instruction for edit workflows. Empty keeps the workflow's own.
     negative: things to avoid (optional). images: input file paths (images, or a video/audio file
     for video/audio workflows) in the order list_workflows shows. Inpaint workflows use the image's
-    alpha channel as the mask.
+    alpha channel as the mask; an image named masked-*.png carries the area to change as
+    transparency, so pass it to an inpaint workflow.
     width/height/steps: optional; 0 keeps the workflow's values. seed: -1 = random.
     set: advanced overrides {"<node id or title>": {"<input name>": value}} (see describe_workflow).
     """
