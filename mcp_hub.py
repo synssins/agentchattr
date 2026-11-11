@@ -98,9 +98,10 @@ async def _with_session(server: dict, fn):
             return await fn(s)
 
 
-def _run(coro):
-    """Runner threads have no event loop; give each call its own."""
-    return asyncio.run(asyncio.wait_for(coro, CALL_TIMEOUT + 15))
+def _run(coro, server: dict | None = None):
+    """Runner threads have no event loop; give each call its own. The hard stop follows the
+    server's own tool timeout (image generation needs minutes), plus time to start the server."""
+    return asyncio.run(asyncio.wait_for(coro, int((server or {}).get("timeout") or CALL_TIMEOUT) + 15))
 
 
 def list_tools(server: dict, fresh: bool = False) -> list[dict]:
@@ -132,7 +133,7 @@ def call_tool(server: dict, tool: str, args: dict) -> str:
         if getattr(res, "structuredContent", None) and not parts:
             parts.append(json.dumps(res.structuredContent))
         return ("error: " if res.isError else "") + "\n".join(parts)
-    return _run(_with_session(server, go))
+    return _run(_with_session(server, go), server)
 
 
 # ------------------------------------------------------------------ agents
