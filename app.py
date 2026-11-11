@@ -2490,6 +2490,10 @@ async def voice_config_save(request: Request):
             return JSONResponse({"error": "each provider needs a name and an http(s) base URL"}, status_code=400)
         keep = {k: str(p[k]).strip() for k in ("base_url", "model", "format", "voices_url", "clone_url", "default_voice")
                 if p.get(k)}
+        if p.get("stream") in (True, "true", "1", "yes"):
+            keep["stream"] = True  # provider streams raw PCM16 (POST stream=true, response_format=pcm)
+        if str(p.get("sample_rate") or "").isdigit():
+            keep["sample_rate"] = int(p["sample_rate"])
         key = p.get("api_key") or old.get(name, {}).get("api_key")
         providers.append({"name": name, **keep, **({"api_key": key} if key else {})})
     if not providers:
@@ -2511,6 +2515,17 @@ async def voice_speak(request: Request):
     from fastapi.responses import Response
     body = await request.json()
     spec = (agent_manager.specs.get(str(body.get("agent") or "").lower()) if agent_manager else None) or {}
+    if voice.streams(spec.get("voice_provider")):  # raw PCM, passed on chunk by chunk
+        from fastapi.responses import StreamingResponse
+        try:
+            rate, chunks = await asyncio.to_thread(voice.speak_stream, str(body.get("text") or ""),
+                                                   spec.get("voice_provider"), spec.get("voice"), spec.get("voice_speed"))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"error": f"speech failed: {str(exc)[:200]}"}, status_code=502)
+        return StreamingResponse(chunks, media_type="audio/pcm",
+                                 headers={"X-Sample-Rate": str(rate), "Cache-Control": "no-store"})
     try:
         audio, media = await asyncio.to_thread(voice.speak, str(body.get("text") or ""), spec.get("voice_provider"),
                                                spec.get("voice"), spec.get("voice_speed"))

@@ -124,6 +124,42 @@ def speak(text: str, provider_name: str | None = None, voice: str | None = None,
         return r.read(), r.headers.get("Content-Type") or "audio/mpeg"
 
 
+def speak_stream(text: str, provider_name: str | None = None, voice: str | None = None,
+                 speed: float | None = None):
+    """For providers with "stream": true -> (sample rate, iterator of raw PCM16 mono bytes).
+    Bytes are passed on as the provider produces them, so playback starts on the first chunk."""
+    p = provider(provider_name)
+    text = speakable(text)[:3000]
+    if not text:
+        raise ValueError("nothing to read aloud")
+    body = {"input": text, "voice": voice or p.get("default_voice") or "alloy",
+            "response_format": "pcm", "stream": True}
+    if p.get("model"):
+        body["model"] = p["model"]
+    if speed:
+        body["speed"] = max(0.5, min(2.0, float(speed)))
+    headers = {"Content-Type": "application/json"}
+    if p.get("api_key"):
+        headers["Authorization"] = f"Bearer {p['api_key']}"
+    req = urllib.request.Request(p["base_url"].rstrip("/") + "/audio/speech", data=json.dumps(body).encode(),
+                                 headers=headers)
+    resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+    rate = int(resp.headers.get("X-Sample-Rate") or p.get("sample_rate") or 24000)
+
+    def chunks():
+        with resp:
+            while True:
+                b = resp.read1(8192)
+                if not b:
+                    return
+                yield b
+    return rate, chunks()
+
+
+def streams(provider_name: str | None) -> bool:
+    return bool(provider(provider_name).get("stream"))
+
+
 def clone(provider_name: str, name: str, filename: str, sample: bytes) -> str:
     """Upload a voice sample to a provider's voice library -> the new voice name."""
     p = provider(provider_name)

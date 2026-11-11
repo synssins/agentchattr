@@ -264,7 +264,8 @@
         const rows = conf.providers.map(p => ({ ...p }));
         const list = el('div');
         const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format (mp3, wav)'],
-            ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL (cloning)'], ['default_voice', 'Default voice']];
+            ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL (cloning)'], ['default_voice', 'Default voice'],
+            ['sample_rate', 'Sample rate (streaming, if not sent)']];
         const def = el('select', { 'aria-label': 'Default provider' });
         const draw = () => {
             list.textContent = '';
@@ -276,6 +277,9 @@
                     inp.addEventListener('input', () => { r[k] = inp.value; });
                     grid.append(el('label', { class: 'agents-field' }, el('span', { text: label }), inp));
                 }
+                const st = el('input', { type: 'checkbox', checked: !!r.stream });
+                st.addEventListener('change', () => { r.stream = st.checked; });
+                grid.append(el('label', { class: 'agents-toggle' }, st, el('span', { text: 'Streams raw PCM (starts speaking on the first chunk)' })));
                 const key = el('input', { type: 'password', placeholder: r.has_key ? 'stored (leave blank to keep)' : 'none', autocomplete: 'off' });
                 key.addEventListener('input', () => { r.api_key = key.value; });
                 grid.append(el('label', { class: 'agents-field' }, el('span', { text: 'API key' }), key));

@@ -24,7 +24,7 @@ const Voice = (() => {
     // ---------------- Playback ----------------
     // One queue of sentences. The next sentence is fetched while the current one plays, across
     // messages too, so streamed sentences (agent_stream) play back to back.
-    let queue = [];        // [{agent, text, id, url?: Promise<string>}]
+    let queue = [];        // [{agent, text, id, clip?}] (clip: see startClip)
     let audio = null;      // the playing <audio>
     let playing = null;    // message id being read
     let gen = 0;           // bumps on stop: pending fetches are thrown away
@@ -58,17 +58,100 @@ const Voice = (() => {
         return out.map(s => s.trim()).filter(Boolean);
     }
 
-    async function fetchAudio(agent, text) {
-        const r = await post('/api/voice/speak', { agent, text });
-        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `speech failed (${r.status})`);
-        return URL.createObjectURL(await r.blob());
+    // A clip starts rendering at once. Providers that stream raw PCM (Settings > Voice) hand over
+    // chunks as they are made; others return one file.
+    function startClip(agent, text) {
+        const clip = { chunks: [], done: false, err: null, url: null, rate: 24000, wake: null, ctrl: new AbortController() };
+        const poke = () => { const w = clip.wake; clip.wake = null; if (w) w(); };
+        (async () => {
+            try {
+                const r = await fetch('/api/voice/speak', { method: 'POST', signal: clip.ctrl.signal,
+                    headers: { 'Content-Type': 'application/json', 'X-Session-Token': token() },
+                    body: JSON.stringify({ agent, text }) });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `speech failed (${r.status})`);
+                if ((r.headers.get('Content-Type') || '').startsWith('audio/pcm')) {
+                    clip.rate = Number(r.headers.get('X-Sample-Rate')) || 24000;
+                    const reader = r.body.getReader();
+                    let odd = null;  // a PCM16 sample can straddle two network chunks
+                    for (;;) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        let bytes = value;
+                        if (odd) { bytes = new Uint8Array(odd.length + value.length); bytes.set(odd); bytes.set(value, odd.length); odd = null; }
+                        if (bytes.length % 2) { odd = bytes.slice(-1); bytes = bytes.slice(0, -1); }
+                        if (bytes.length) { clip.chunks.push(bytes); poke(); }
+                    }
+                } else {
+                    clip.url = URL.createObjectURL(await r.blob());
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') clip.err = err;
+            }
+            clip.done = true;
+            poke();
+        })();
+        return clip;
+    }
+
+    function dropClip(clip) {
+        if (!clip) return;
+        clip.ctrl.abort();
+        if (clip.url) URL.revokeObjectURL(clip.url);
+    }
+
+    let actx = null;          // WebAudio context for streamed PCM
+    let sources = [];         // scheduled PCM pieces (stopped by stop())
+
+    async function playClip(clip, mine) {
+        const wait = () => new Promise(r => { clip.wake = r; });
+        while (!clip.done && !clip.chunks.length && !clip.url) await wait();
+        if (mine !== gen) return;
+        if (clip.err) { toast(clip.err.message); return; }
+        if (clip.url) {  // a whole file
+            await new Promise((resolve) => {
+                audio = new Audio(clip.url);
+                audio.onended = audio.onerror = () => { URL.revokeObjectURL(clip.url); resolve(); };
+                audio.play().catch(() => { toast('The browser blocked audio: click anywhere on the page once, then try again.'); resolve(); });
+            });
+            audio = null;
+            return;
+        }
+        actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+        if (actx.state === 'suspended') await actx.resume().catch(() => {});
+        let at = actx.currentTime + 0.08;  // small cushion against network jitter
+        for (;;) {
+            if (mine !== gen) return;
+            if (clip.chunks.length) {
+                const b = clip.chunks.shift();
+                const pcm = new Int16Array(b.buffer, b.byteOffset, b.length / 2);
+                const buf = actx.createBuffer(1, pcm.length, clip.rate);
+                const ch = buf.getChannelData(0);
+                for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+                const src = actx.createBufferSource();
+                src.buffer = buf;
+                src.connect(actx.destination);
+                at = Math.max(at, actx.currentTime + 0.02);
+                src.start(at);
+                at += buf.duration;
+                sources.push(src);
+                src.onended = () => { sources = sources.filter(x => x !== src); };
+            } else if (clip.done) {
+                break;
+            } else {
+                await wait();
+            }
+        }
+        await new Promise(r => setTimeout(r, Math.max(0, (at - actx.currentTime) * 1000)));
     }
 
     function stop() {
         gen++;
-        for (const q of queue) q.url?.then(URL.revokeObjectURL, () => {});
+        for (const q of queue) dropClip(q.clip);
         queue = [];
-        if (audio) { audio.pause(); audio.src = ''; audio = null; quietUntil = Date.now() + TAIL_MS; }
+        if (audio) { audio.pause(); audio.src = ''; audio = null; }
+        for (const src of sources) { try { src.stop(); } catch (_) { /* already ended */ } }
+        if (sources.length || playing != null) quietUntil = Date.now() + TAIL_MS;
+        sources = [];
         markPlaying(null);
     }
 
@@ -80,8 +163,14 @@ const Voice = (() => {
     }
 
     // Queue a message (or a streamed piece of one): split into sentences
+    const AHEAD = 4;  // sentences rendering ahead: the voice server never idles, so no gaps between sentences
+    function prefetch() {
+        for (const q of queue.slice(0, AHEAD)) if (!q.clip) q.clip = startClip(q.agent, q.text);
+    }
+
     function enqueue(msg) {
         for (const text of sentences(msg.text || '')) queue.push({ agent: msg.sender, text, id: msg.id });
+        prefetch();
         if (queue.length && !running) play();
     }
 
@@ -90,19 +179,12 @@ const Voice = (() => {
         const mine = gen;
         while (queue.length && mine === gen) {
             const part = queue.shift();
-            part.url = part.url || fetchAudio(part.agent, part.text);
-            if (queue[0] && !queue[0].url) queue[0].url = fetchAudio(queue[0].agent, queue[0].text);  // prefetch
+            part.clip = part.clip || startClip(part.agent, part.text);
+            prefetch();
             markPlaying(part.id);
-            let url;
-            try { url = await part.url; } catch (err) { toast(err.message); continue; }
-            if (mine !== gen) { URL.revokeObjectURL(url); break; }
             spoken.push({ t: Date.now(), words: part.text.toLowerCase().match(/[a-z0-9']+/g) || [] });
-            await new Promise((resolve) => {
-                audio = new Audio(url);
-                audio.onended = audio.onerror = () => { URL.revokeObjectURL(url); quietUntil = Date.now() + TAIL_MS; resolve(); };
-                audio.play().catch(() => { toast('The browser blocked audio: click anywhere on the page once, then try again.'); resolve(); });
-            });
-            audio = null;
+            await playClip(part.clip, mine);
+            if (mine === gen) quietUntil = Date.now() + TAIL_MS;
         }
         running = false;
         if (mine === gen) markPlaying(null);
