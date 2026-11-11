@@ -403,6 +403,38 @@ const Control = (() => {
     }, true);
     window.addEventListener('resize', closePicker);
 
+    // ---------------- Thinking level (per channel, next reply) ----------------
+    // Sent to models as reasoning_effort. "Default" leaves each model's own setting.
+    const effortSel = document.createElement('select');
+    effortSel.id = 'effort-select';
+    effortSel.className = 'effort-select';
+    effortSel.title = 'Thinking for agent replies in this channel (applies from the next reply)';
+    effortSel.setAttribute('aria-label', 'Thinking level');
+    effortSel.innerHTML = '<option value="">Think: default</option><option value="none">Think: off</option>'
+        + '<option value="low">Think: low</option><option value="medium">Think: medium</option><option value="high">Think: high</option>';
+    const chan = () => (typeof activeChannel !== 'undefined' ? activeChannel : 'general');
+    async function loadEffort() {
+        try {
+            const r = await fetch(`/api/effort?channel=${encodeURIComponent(chan())}`, { headers: { 'X-Session-Token': window.SESSION_TOKEN } });
+            if (r.ok) effortSel.value = (await r.json()).effort || '';
+        } catch (_) { /* keep the shown value */ }
+    }
+    effortSel.addEventListener('change', async () => {
+        const r = await fetch('/api/effort', { method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Session-Token': window.SESSION_TOKEN },
+            body: JSON.stringify({ channel: chan(), effort: effortSel.value }) });
+        if (!r.ok && typeof showToast === 'function') showToast('Could not change the thinking level', 'error');
+    });
+    Hub.on('effort', (ev) => { if (ev.channel === chan()) effortSel.value = ev.effort || ''; });
+    window.addEventListener('agenthub-channel', loadEffort);
+    const mountEffort = () => {
+        const send = document.querySelector('#input-row .send-group');
+        if (!send || effortSel.isConnected) return;
+        send.before(effortSel);
+        loadEffort();
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountEffort); else mountEffort();
+
     return { decorate, threadReply, toggle, openPicker, open, close };
 })();
 window.Control = Control;

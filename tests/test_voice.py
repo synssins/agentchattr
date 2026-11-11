@@ -61,6 +61,11 @@ class Voice(unittest.TestCase):
         self.assertEqual(got["types"][-1], "audio-stop")
         self.assertEqual(len(got["audio"]), 80000)
 
+    def test_whisper_hallucinations_are_dropped_but_real_speech_kept(self):
+        for junk in ("Thanks for watching!", "Thank you.", "you", "[BLANK_AUDIO]", "Please subscribe."):
+            self.assertEqual(voice.clean_transcript(junk), "", junk)
+        self.assertEqual(voice.clean_transcript("Thank you, now draw a cat."), "Thank you, now draw a cat.")
+
     def test_provider_falls_back_to_default(self):
         self.assertEqual(voice.provider("nope")["name"], "Kokoro")
         self.assertEqual(voice.provider("Chatterbox")["name"], "Chatterbox")

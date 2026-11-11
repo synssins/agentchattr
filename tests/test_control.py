@@ -238,7 +238,7 @@ class ThreadTest(AppHarness):
         r = agent_runner.Runner(mgr, "qwen")
         seen = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             seen.extend(m["content"] for m in msgs if isinstance(m["content"], str))
             return {"content": "Looks fine."}
         with patch.object(agent_runner, "call_api_message", fake), \

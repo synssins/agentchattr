@@ -22,12 +22,13 @@ const Voice = (() => {
         || (typeof resolveAgent === 'function' && !!resolveAgent((name || '').toLowerCase()));
 
     // ---------------- Playback ----------------
-    // Messages are split into sentences; the next sentence is fetched while one plays,
-    // so slow voices (Chatterbox on CPU) start after the first sentence, not the whole text.
-    let queue = [];        // [{agent, text, id}]
+    // One queue of sentences. The next sentence is fetched while the current one plays, across
+    // messages too, so streamed sentences (agent_stream) play back to back.
+    let queue = [];        // [{agent, text, id, url?: Promise<string>}]
     let audio = null;      // the playing <audio>
     let playing = null;    // message id being read
     let gen = 0;           // bumps on stop: pending fetches are thrown away
+    let running = false;   // the player loop is active
     let quietUntil = 0;    // the mic ignores sound until then (the speaker's echo dies down)
     let spoken = [];       // [{t, words}] sentences read aloud lately, to drop their echo
     const TAIL_MS = 800;
@@ -65,6 +66,7 @@ const Voice = (() => {
 
     function stop() {
         gen++;
+        for (const q of queue) q.url?.then(URL.revokeObjectURL, () => {});
         queue = [];
         if (audio) { audio.pause(); audio.src = ''; audio = null; quietUntil = Date.now() + TAIL_MS; }
         markPlaying(null);
@@ -77,32 +79,33 @@ const Voice = (() => {
         setState();
     }
 
+    // Queue a message (or a streamed piece of one): split into sentences
     function enqueue(msg) {
-        queue.push({ agent: msg.sender, text: msg.text || '', id: msg.id });
-        if (playing == null) next();
+        for (const text of sentences(msg.text || '')) queue.push({ agent: msg.sender, text, id: msg.id });
+        if (queue.length && !running) play();
     }
 
-    async function next() {
-        const item = queue.shift();
-        if (!item) { markPlaying(null); return; }
+    async function play() {
+        running = true;
         const mine = gen;
-        markPlaying(item.id);
-        const parts = sentences(item.text);
-        let pending = parts.length ? fetchAudio(item.agent, parts[0]) : null;
-        for (let i = 0; i < parts.length && mine === gen; i++) {
+        while (queue.length && mine === gen) {
+            const part = queue.shift();
+            part.url = part.url || fetchAudio(part.agent, part.text);
+            if (queue[0] && !queue[0].url) queue[0].url = fetchAudio(queue[0].agent, queue[0].text);  // prefetch
+            markPlaying(part.id);
             let url;
-            try { url = await pending; } catch (err) { toast(err.message); break; }
-            pending = i + 1 < parts.length ? fetchAudio(item.agent, parts[i + 1]) : null;
+            try { url = await part.url; } catch (err) { toast(err.message); continue; }
             if (mine !== gen) { URL.revokeObjectURL(url); break; }
-            spoken.push({ t: Date.now(), words: parts[i].toLowerCase().match(/[a-z0-9']+/g) || [] });
+            spoken.push({ t: Date.now(), words: part.text.toLowerCase().match(/[a-z0-9']+/g) || [] });
             await new Promise((resolve) => {
                 audio = new Audio(url);
                 audio.onended = audio.onerror = () => { URL.revokeObjectURL(url); quietUntil = Date.now() + TAIL_MS; resolve(); };
                 audio.play().catch(() => { toast('The browser blocked audio: click anywhere on the page once, then try again.'); resolve(); });
             });
+            audio = null;
         }
-        pending?.then(URL.revokeObjectURL, () => {});
-        if (mine === gen) next();
+        running = false;
+        if (mine === gen) markPlaying(null);
     }
 
     function toast(text) {
@@ -131,12 +134,40 @@ const Voice = (() => {
     const autoKey = () => `agenthub-autospeak-${typeof activeChannel !== 'undefined' ? activeChannel : 'general'}`;
     const autoOn = () => store.get(autoKey(), false);
 
+    const wanted = (agent) => autoOn() || (talking && (!target || agent.toLowerCase() === target));
+
+    // The reply as the agent writes it (agent_runner streams it): speak each finished sentence
+    // right away instead of waiting for the whole message.
+    const streams = {};  // sid -> {base: text seen, done: chars already queued}
+    Hub.on('agent_stream', (ev) => {
+        if (ev.thread != null || (ev.channel || 'general') !== activeChannel || !ev.sid || !wanted(ev.agent || '')) return;
+        const st = streams[ev.sid] || (streams[ev.sid] = { base: '', done: 0 });
+        const text = ev.text || '';
+        if (!text.startsWith(st.base.slice(0, st.done))) st.done = 0;  // a new segment (after a tool call)
+        st.base = text;
+        const rest = text.slice(st.done);
+        const m = rest.match(/^[\s\S]*[.!?]["')\]]*\s+/);  // up to the last complete sentence
+        if (!m || m[0].trim().length < 2) return;
+        st.done += m[0].length;
+        if (ev.agent.toLowerCase() === target) waiting = false;
+        enqueue({ sender: ev.agent, text: m[0], id: ev.sid });
+    });
+
     Hub.on('message', (ev) => {
         const m = ev.data;
         if (!m || m.type && m.type !== 'chat' || !m.text || m.thread != null) return;
         if ((m.channel || 'general') !== activeChannel || !isAgent(m.sender)) return;
         if (talking && target && m.sender.toLowerCase() === target) waiting = false;
-        if (autoOn() || (talking && (!target || m.sender.toLowerCase() === target))) enqueue(m);
+        if (!wanted(m.sender)) return;
+        const st = streams[m.metadata?.stream];
+        if (st) {  // most of it was spoken while streaming: only the rest
+            delete streams[m.metadata.stream];
+            const said = st.base.slice(0, st.done);
+            const rest = m.text.startsWith(said) ? m.text.slice(st.done) : (st.done ? '' : m.text);
+            if (rest.trim()) enqueue({ sender: m.sender, text: rest, id: m.id });
+            return;
+        }
+        enqueue(m);
     });
 
     // ---------------- Talking: hands-free and push-to-talk ----------------
@@ -147,6 +178,7 @@ const Voice = (() => {
     let mic = null;          // {ctx, stream, node, rate}
     let frames = [], preroll = [], speaking = false, voiced = 0, silent = 0, floor = 0.01;
     let busy = false;        // transcribing
+    const END_SILENCE_S = 0.6;  // this much quiet ends what you say
 
     async function openMic() {
         if (mic) return mic;
@@ -174,7 +206,7 @@ const Voice = (() => {
     }
 
     // Voice activity detection on signal level, with an adaptive noise floor.
-    // ~43 ms frames at 48 kHz: speech starts after 4 loud frames, ends after ~1 s of quiet.
+    // ~43 ms frames at 48 kHz: speech starts after 4 loud frames, ends after END_SILENCE_S of quiet.
     function onFrame(f, rate) {
         if (ptt) { frames.push(f); return; }
         if (!talking || busy) return;
@@ -202,7 +234,7 @@ const Voice = (() => {
         frames.push(f);
         silent = loud ? 0 : silent + 1;
         const secs = frames.length * f.length / rate;
-        if (silent * f.length / rate > 1.0 || secs > 30) {
+        if (silent * f.length / rate > END_SILENCE_S || secs > 30) {
             speaking = false;
             const take = frames;
             frames = [];

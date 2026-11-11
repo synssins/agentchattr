@@ -336,7 +336,7 @@ class AttachmentTest(unittest.TestCase):
         import urllib.error
         calls = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             calls.append([dict(m) for m in msgs])
             if len(calls) == 1:
                 raise urllib.error.HTTPError("u", 400, "no vision", {}, None)
@@ -442,7 +442,7 @@ class ToolLoopTest(unittest.TestCase):
         store.add("alice", "@qwen run echo")
         seen = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             seen.append(msgs[-1])
             if len(seen) == 1:
                 self.assertIn("slop-chop", system) if "slop-chop" in self.at.skills() else None
@@ -469,7 +469,7 @@ class ToolLoopTest(unittest.TestCase):
         store.add("alice", "@iris check")
         seen = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             seen.append([dict(m) for m in msgs])
             if len(seen) == 1:
                 return {"content": "<tool_call>\n<function=grep>\n</function>\n</tool_call>"}
@@ -616,7 +616,7 @@ class ToolBudgetTest(unittest.TestCase):
         store.add("alice", "@q work")
         calls = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             calls.append(tools)
             if tools:
                 return {"content": "", "tool_calls": [{"id": str(len(calls)), "type": "function",
@@ -650,7 +650,7 @@ class ResumeAfterRestartTest(unittest.TestCase):
         self.assertEqual(mgr2.state["lazlo"]["inflight"], ["sonorium"])
         seen = []
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             seen.append(msgs[-1]["content"])
             return {"content": "Picked it back up."}
         orig = agent_runner.call_api_message

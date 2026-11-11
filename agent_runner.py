@@ -19,6 +19,7 @@ they are never sent back to the browser).
 
 from __future__ import annotations  # AgentManager.list shadows list[...] in annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -30,6 +31,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -114,6 +116,50 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
         raise
 
 
+_NO_STREAM: set = set()  # agents whose provider refused streaming
+
+
+def _post_stream(url: str, payload: dict, headers: dict, timeout: int, on_text) -> tuple[dict, dict]:
+    """Streamed chat completion -> (assistant message, usage). on_text(text so far) runs per delta."""
+    req = urllib.request.Request(url, method="POST", data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json", "Accept": "text/event-stream", **headers})
+    text, calls, usage = "", {}, {}
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        exc.msg = f"{exc.msg}: {exc.read()[:400].decode('utf-8', 'replace')}"
+        raise
+    with resp:
+        for raw in resp:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if body == "[DONE]":
+                break
+            try:
+                chunk = json.loads(body)
+            except ValueError:
+                continue
+            usage = chunk.get("usage") or usage
+            for ch in chunk.get("choices") or []:
+                d = ch.get("delta") or {}
+                if d.get("content"):
+                    text += d["content"]
+                    on_text(text)
+                for tc in d.get("tool_calls") or []:
+                    c = calls.setdefault(tc.get("index", len(calls)), {"id": "", "type": "function",
+                                                                      "function": {"name": "", "arguments": ""}})
+                    c["id"] = tc.get("id") or c["id"]
+                    f = tc.get("function") or {}
+                    c["function"]["name"] += f.get("name") or ""
+                    c["function"]["arguments"] += f.get("arguments") or ""
+    msg = {"role": "assistant", "content": text}
+    if calls:
+        msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+    return msg, usage
+
+
 # Compaction (API agents): messages that leave the context window fold into a rolling memory
 MEMORY_PROMPT = ("You keep the running memory of a group chat for the agent {name}. Merge the earlier "
                  "memory and the new messages into one updated memory: decisions, facts, open tasks, "
@@ -124,6 +170,31 @@ MEMORY_MAX = 4000          # chars of memory kept
 TOOL_BUDGET = 40000        # chars of tool output in one turn before older results are trimmed
 STOP_NOTE = ("(Room note: the owner stopped your turn here. Drop the request you were working on; "
              "don't resume it unless someone asks again.)")
+EFFORTS = ("none", "low", "medium", "high")
+_effort_path: Path | None = None
+
+
+def effort_for(channel: str) -> str | None:
+    """Thinking level chosen in the chat for this channel (None: the model's default)."""
+    try:
+        return json.loads(_effort_path.read_text("utf-8")).get(channel) if _effort_path else None
+    except (OSError, ValueError):
+        return None
+
+
+def set_effort(channel: str, effort: str | None):
+    data = {}
+    try:
+        data = json.loads(_effort_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        pass
+    if effort in EFFORTS:
+        data[channel] = effort
+    else:
+        data.pop(channel, None)
+    _effort_path.write_text(json.dumps(data), "utf-8")
+
+
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -232,7 +303,7 @@ def _trim_tool_output(msgs: list[dict], budget: int = TOOL_BUDGET, keep: int = 3
 
 
 def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None,
-                     tool_choice: str | None = None) -> dict:
+                     tool_choice: str | None = None, on_text=None, effort: str | None = None) -> dict:
     """One chat call -> the assistant message ({"content", "tool_calls"?}).
     Tools are passed for OpenAI-compatible providers only."""
     base = spec.get("base_url", "").rstrip("/")
@@ -265,8 +336,25 @@ def call_api_message(spec: dict, system: str, messages: list[dict], tools: list 
             payload["tool_choice"] = tool_choice
     if spec.get("temperature") is not None:
         payload["temperature"] = float(spec["temperature"])
-    data = _post_json(f"{base}/chat/completions", payload,
-                      {"Authorization": f"Bearer {key}"} if key else {}, timeout=_timeout(spec))
+    if effort:  # the chat's Thinking selector: none / low / medium / high
+        payload["reasoning_effort"] = effort
+    auth = {"Authorization": f"Bearer {key}"} if key else {}
+    if on_text and spec.get("name") not in _NO_STREAM:  # stream so voice can start on the first sentence
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        try:
+            msg, u = _post_stream(f"{base}/chat/completions", payload, auth, _timeout(spec), on_text)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (400, 404, 422):
+                raise
+            log.info("%s: streaming refused (%s); not streaming for this agent", spec.get("name"), exc.code)
+            _NO_STREAM.add(spec.get("name"))  # in memory only: retried after a restart
+            return call_api_message(spec, system, messages, tools, tool_choice, None, effort)
+        det = u.get("prompt_tokens_details") or {}
+        _record(spec, time.monotonic() - t0, u.get("prompt_tokens") or 0, det.get("cached_tokens") or 0,
+                det.get("cache_write_tokens") or 0, u.get("completion_tokens") or 0, u.get("cost"))
+        return msg
+    data = _post_json(f"{base}/chat/completions", payload, auth, timeout=_timeout(spec))
     u = data.get("usage") or {}
     det = u.get("prompt_tokens_details") or {}
     _record(spec, time.monotonic() - t0, u.get("prompt_tokens") or 0, det.get("cached_tokens") or 0,
@@ -607,6 +695,7 @@ class Runner:
         hub = self.m.hub
         self.thread = thread  # read by _api_turn/_cli_turn/_addressed; the reply goes back there
         self.channel = channel  # read by halt_turn
+        self.stream_id = uuid.uuid4().hex[:12]  # ties streamed text to the final message (voice)
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
@@ -642,7 +731,7 @@ class Runner:
             self.last_ok = time.time()
             if (reply and reply != NO_REPLY) or attachments:
                 hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
-                              attachments=attachments, thread=thread)
+                              attachments=attachments, thread=thread, metadata={"stream": self.stream_id})
             else:
                 log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
             if renames:  # after posting, so the reply is re-attributed with the rest
@@ -711,36 +800,46 @@ class Runner:
             if any(a.get("kind") == "image" for _, a in self._files(m)) and m["sender"] != self.name:
                 inline.add(m["id"])
 
+        # Room notes stay where they were said: moving one to the end each turn changed the prompt
+        # before the engine's cache point, so every turn re-read the whole prompt (~6 s on the B60).
+        notes = self.__dict__.setdefault("_notes", {}).setdefault(f"{channel}:{self.thread}", {})
+        ids = {m["id"] for m in history}
+        for k in [k for k in notes if k not in ids]:
+            del notes[k]
+
         def build(with_images: bool) -> list[dict]:
+            stop_id = ((getattr(self.m, "state", None) or {}).get(self.name, {}).get("stopped") or {}).get(channel)
+            stop_at = max((m["id"] for m in history if stop_id is not None and self.thread is None
+                           and m["id"] <= stop_id), default=None)
             msgs = []
             for m in history:
                 if m["sender"] == self.name:
                     msgs.append({"role": "assistant", "content": self._text(m) if "[artifact:" in m["text"] else m["text"]})
-                    continue
-                text = f"#{m['id']} {m['sender']}: {self._text(m)}"  # ids let agents cite messages
-                parts = []
-                if with_images and m["id"] in inline:
-                    for path, a in self._files(m):
-                        try:
-                            if a.get("kind") == "image" and os.path.getsize(path) <= MAX_IMAGE_BYTES:
-                                data = base64.b64encode(Path(path).read_bytes()).decode()
-                                parts.append({"type": "image_url", "image_url": {
-                                    "url": f"data:{a.get('media_type', 'image/png')};base64,{data}"}})
-                        except OSError:
-                            pass
-                msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
-            stop_id = ((getattr(self.m, "state", None) or {}).get(self.name, {}).get("stopped") or {}).get(channel)
-            if stop_id is not None and self.thread is None:
-                at = sum(1 for m in history if m["id"] <= stop_id)
-                if at:
-                    msgs.insert(at, {"role": "user", "content": STOP_NOTE})
+                else:
+                    text = f"#{m['id']} {m['sender']}: {self._text(m)}"  # ids let agents cite messages
+                    parts = []
+                    if with_images and m["id"] in inline:
+                        for path, a in self._files(m):
+                            try:
+                                if a.get("kind") == "image" and os.path.getsize(path) <= MAX_IMAGE_BYTES:
+                                    data = base64.b64encode(Path(path).read_bytes()).decode()
+                                    parts.append({"type": "image_url", "image_url": {
+                                        "url": f"data:{a.get('media_type', 'image/png')};base64,{data}"}})
+                            except OSError:
+                                pass
+                    msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
+                if m["id"] == stop_at:
+                    msgs.append({"role": "user", "content": STOP_NOTE})
+                if m["id"] in notes and m is not history[-1]:
+                    msgs.append({"role": "user", "content": notes[m["id"]]})
             # Always the same first line (a fixed prompt start caches; Anthropic also needs a user turn first)
             mem = self.memory(channel).get("text")
             msgs.insert(0, {"role": "user", "content": f"(Earlier conversation, from your memory notes:)\n{mem}"
                             if mem else "(earlier conversation omitted)"})
             note = self._turn_note(channel)
-            if note:
-                msgs.append({"role": "user", "content": f"(Room note, not a chat message)\n{note}"})
+            if note and history:
+                notes[history[-1]["id"]] = f"(Room note, not a chat message)\n{note}"
+                msgs.append({"role": "user", "content": notes[history[-1]["id"]]})
             return msgs
 
         older = getattr(self, "_dropped", []) if self.thread is None else []
@@ -757,6 +856,27 @@ class Runner:
         finally:  # after the reply, not before: compaction never delays an answer
             if older and not self.halt.is_set() and not self.spec.get("no_compact"):
                 threading.Thread(target=self._compact, args=(channel, older), daemon=True).start()
+
+    def _streamer(self, channel: str):
+        """on_text callback: push the reply as it is written to browsers (voice reads it early).
+        Sent at most every 0.3 s and whenever a sentence ends."""
+        hub = self.m.hub
+        loop = getattr(hub, "_event_loop", None)
+        if not loop or not hasattr(hub, "_broadcast"):
+            return None
+        sid, thread = self.__dict__.get("stream_id"), self.thread
+        last = {"t": 0.0, "n": 0}
+
+        def push(text: str):
+            now = time.monotonic()
+            ended = bool(re.search(r"[.!?]['\")\]]*\s*$", text))
+            if self.halt.is_set() or (now - last["t"] < 0.3 and not ended) or len(text) == last["n"]:
+                return
+            last["t"], last["n"] = now, len(text)
+            ev = json.dumps({"type": "agent_stream", "agent": self.name, "channel": channel, "thread": thread,
+                             "sid": sid, "text": text})
+            asyncio.run_coroutine_threadsafe(hub._broadcast(ev), loop)
+        return push
 
     def memory(self, channel: str) -> dict:
         """{"upto": last folded message id, "text": notes} for this agent in this channel."""
@@ -843,7 +963,8 @@ class Runner:
             _trim_tool_output(msgs)
             try:  # "require_tool": the first step must call a tool (read before answering)
                 reply = call_api_message(spec, system, msgs, tools,
-                                         "required" if step == 0 and spec.get("require_tool") else None)
+                                         "required" if step == 0 and spec.get("require_tool") else None,
+                                         on_text=self._streamer(channel), effort=effort_for(channel))
             except urllib.error.HTTPError as exc:
                 # A 400 with inline images: let the caller retry without images first
                 if images_inline or not tools or exc.code not in (400, 422):
@@ -897,7 +1018,7 @@ class Runner:
         msgs.append({"role": "user", "content": (
             f"(You have used all {steps} tool steps for this turn. Don't call tools. Post what you did, "
             "what you found, and exactly what is left, so the work can continue next turn.)")})
-        return with_files(call_api_message(spec, system, msgs, None).get("content") or
+        return with_files(call_api_message(spec, system, msgs, None, effort=effort_for(channel)).get("content") or
                           f"(stopped after {steps} tool steps without a summary)")
 
     def _cli_turn(self, channel: str) -> str:
@@ -970,7 +1091,8 @@ class AgentManager:
         self.data_dir = data_dir
         self.path = Path(data_dir) / "managed_agents.json"
         self.state_path = Path(data_dir) / "managed_agents_state.json"
-        global METRICS_PATH
+        global METRICS_PATH, _effort_path
+        _effort_path = Path(data_dir) / "effort.json"
         METRICS_PATH = Path(data_dir) / "metrics.jsonl"
         self.lock = threading.Lock()
         self.specs: dict[str, dict] = {}

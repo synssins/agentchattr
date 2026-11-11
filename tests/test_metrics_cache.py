@@ -46,7 +46,7 @@ class StablePromptTest(unittest.TestCase):
         store.add("alice", "hello everyone")
         seen = {}
 
-        def fake(spec, system, msgs, tools=None, tool_choice=None):
+        def fake(spec, system, msgs, tools=None, tool_choice=None, **kw):
             seen["system"], seen["msgs"] = system, msgs
             return {"content": "ok"}
         with mock.patch.object(agent_runner, "call_api_message", fake):

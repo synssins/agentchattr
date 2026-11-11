@@ -24,7 +24,7 @@ class Compaction(unittest.TestCase):
                          "cwd": tmp.name})
         self.calls = []
 
-    def fake(self, spec, system, msgs, tools=None, tool_choice=None):
+    def fake(self, spec, system, msgs, tools=None, tool_choice=None, **kw):
         self.calls.append((system, msgs))
         if system.startswith("You keep the running memory"):
             return {"content": "<think>hmm</think>MEMORY: alice wants a red bike"}
@@ -83,6 +83,23 @@ class Compaction(unittest.TestCase):
         self.assertFalse(h["endpoint"]["up"])
         self.assertEqual(h["queued"], 1)
         self.assertEqual(h["last_error"]["why"], "boom")
+
+    def test_next_turn_prompt_extends_the_last_one(self):
+        """Regression: the room note moved to the end each turn, so the engine re-read the
+        whole prompt every time. The earlier prompt must be an exact prefix of the next."""
+        self.mgr.specs["q"]["context_messages"] = 30
+        self.store.add("alice", "hello")
+        r = agent_runner.Runner(self.mgr, "q")
+        with mock.patch.object(agent_runner, "call_api_message", self.fake), \
+                mock.patch.object(agent_runner.Runner, "_turn_note", lambda self, ch: "nobody named you"):
+            r._api_turn("general")
+            first = list(self.calls[-1][1])
+            self.store.add("q", "ok")
+            self.store.add("alice", "and now?")
+            r._api_turn("general")
+            second = self.calls[-1][1]
+        self.assertEqual(second[:len(first)], first)
+        self.assertGreater(len(second), len(first))
 
     def test_old_tool_output_is_trimmed_past_the_budget(self):
         msgs = [{"role": "tool", "content": "x" * 1000} for _ in range(5)]

@@ -2521,6 +2521,27 @@ async def voice_speak(request: Request):
     return Response(audio, media_type=media, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/effort")
+async def effort_get(channel: str = "general"):
+    """Thinking level for agents answering in a channel (the chat's Thinking selector)."""
+    import agent_runner
+    return {"channel": channel, "effort": agent_runner.effort_for(channel) or ""}
+
+
+@app.post("/api/effort")
+async def effort_set(request: Request):
+    """Body: {channel, effort: "" | none | low | medium | high}. Applies from the next reply."""
+    import agent_runner
+    body = await request.json()
+    channel = str(body.get("channel") or "general")
+    effort = str(body.get("effort") or "")
+    if effort and effort not in agent_runner.EFFORTS:
+        return JSONResponse({"error": f"effort must be one of {agent_runner.EFFORTS}"}, status_code=400)
+    agent_runner.set_effort(channel, effort or None)
+    await _broadcast(json.dumps({"type": "effort", "channel": channel, "effort": effort}))
+    return {"channel": channel, "effort": effort}
+
+
 @app.post("/api/voice/preview")
 async def voice_preview(request: Request):
     """Body: {text, provider, voice, speed}: try a voice before saving it on an agent."""

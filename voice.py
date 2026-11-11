@@ -152,6 +152,19 @@ def clone(provider_name: str, name: str, filename: str, sample: bytes) -> str:
 
 # ---------------------------------------------------------------- speech-to-text (Wyoming)
 
+# Whisper invents these on silence or noise (trained on video subtitles); drop them when they are
+# the whole transcript.
+HALLUCINATIONS = re.compile(
+    r"^(thanks? (you )?(so much )?for watching|thank you( very much)?|thanks|bye|you|"
+    r"please subscribe|(like and )?subscribe( to (my|the) channel)?|subtitles by.*|"
+    r"see you (next time|in the next video)|\.+|\[.*\]|\(.*\))[.!]*$", re.I)
+
+
+def clean_transcript(text: str) -> str:
+    t = (text or "").strip()
+    return "" if HALLUCINATIONS.match(t) else t
+
+
 def _send(sock, etype: str, data: dict | None = None, payload: bytes = b""):
     head = {"type": etype, "data": data or {}}
     if payload:
@@ -190,6 +203,6 @@ def transcribe(wav_bytes: bytes) -> str:
         while True:
             ev = _read_event(f)
             if ev["type"] == "transcript":
-                return (ev.get("data") or {}).get("text", "").strip()
+                return clean_transcript((ev.get("data") or {}).get("text", ""))
             if ev["type"] == "error":
                 raise RuntimeError((ev.get("data") or {}).get("text", "speech-to-text failed"))

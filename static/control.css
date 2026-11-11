@@ -307,3 +307,19 @@
     #ctl-thread-panel, .ctl-pick { transition: none; }
     .ctl-working-dot { animation: none; }
 }
+
+/* Thinking level selector in the composer row */
+.effort-select {
+    min-height: 40px;
+    padding: 0 8px;
+    background: var(--bg-input);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    font: inherit;
+    font-size: 12px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.effort-select:hover, .effort-select:focus { color: var(--text); border-color: var(--accent); outline: none; }
+@media (max-width: 640px) { .effort-select { max-width: 92px; } }

@@ -3353,7 +3353,7 @@ let voiceText = '';
 function voiceTypingMode() {
     try { return localStorage.getItem('agenthub-voice-typing') || 'box'; } catch (_) { return 'box'; }
 }
-const VOICE_PAUSE_MS = 1200;  // quiet after a final result = end of speech
+const VOICE_PAUSE_MS = 700;  // quiet after a final result = end of speech
 let voicePauseTimer = null;
 let voiceLiveText = '';
 
