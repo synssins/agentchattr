@@ -287,7 +287,9 @@ def _install_security_middleware(token: str, cfg: dict):
             # Allow registered agents to authenticate via Bearer token
             # for /api/messages and /api/send (no browser session needed).
             auth_header = request.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer ") and (path in ("/api/messages", "/api/send", "/api/upload") or path.startswith(("/api/rules/", "/api/artifacts/"))):
+            if auth_header.lower().startswith("bearer ") and (
+                    path in ("/api/messages", "/api/send", "/api/upload") or path.startswith(("/api/rules/", "/api/artifacts/"))
+                    or _re.fullmatch(r"/api/messages/\d+/react", path)):
                 bearer = auth_header[7:].strip()
                 if _self.registry and _self.registry.resolve_token(bearer):
                     return await call_next(request)
@@ -379,6 +381,7 @@ def configure(cfg: dict, session_token: str = ""):
     # Bridge: when ANY message is added to store (including via MCP),
     # broadcast to all WebSocket clients
     store.on_message(_on_store_message)
+    store.on_reaction(_on_store_reaction)
 
     _load_settings()
     _load_hats()
@@ -611,6 +614,15 @@ def _on_store_message(msg: dict):
     except RuntimeError:
         pass  # No running loop — we're in a different thread (MCP)
     asyncio.run_coroutine_threadsafe(_handle_new_message(msg), _event_loop)
+
+
+def _on_store_reaction(msg: dict):
+    """Reactions are broadcast only: they never route, trigger agents or count as loop-guard hops."""
+    if _event_loop is None:
+        return
+    data = json.dumps({"type": "reaction", "id": msg["id"], "channel": msg.get("channel", "general"),
+                       "reactions": msg.get("reactions", {})})
+    asyncio.run_coroutine_threadsafe(_broadcast(data), _event_loop)
 
 
 def _on_rule_change(action: str, rule: dict):
@@ -902,7 +914,8 @@ async def _handle_new_message(msg: dict):
     # Team channels: an untagged message from a human goes to the channel's own
     # agents (#general holds everyone, so there it still takes @all or @name).
     if (not raw_targets and channel != "general" and agent_manager and msg_type == "chat"
-            and sender not in known_agents and sender != "system" and not router.parse_mentions(text)):
+            and sender not in known_agents and sender != "system"
+            and not _re.search(r"(?<![\w.])@[\w-]+", text)):  # any @handle (even unknown/renamed) = tagged
         raw_targets = [n for n in registry.get_active_names() if agent_manager.in_channel(n, channel)]
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
@@ -956,7 +969,8 @@ async def _handle_new_message(msg: dict):
         if not mcp_bridge.is_online(target):
             store.add("system", f"{target} appears offline — message queued.", msg_type="system", channel=channel)
         if agents.is_available(target):
-            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt)
+            await agents.trigger(target, message=chat_msg, channel=channel, prompt=custom_prompt,
+                                 thread=msg.get("thread"))
 
 
 # --- broadcasting ---
@@ -1282,6 +1296,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         store.add("system", note, msg_type="system", channel=channel)
                         await broadcast_status()
                         continue
+                    if cmd == "/stop":
+                        # /stop = every working agent (all channels), /stop @name = one
+                        names = [p.lstrip("@") for p in cmd_parts[1:]] or None
+                        stopped = await asyncio.to_thread(stop_agents, names, sender, channel)
+                        if not stopped:
+                            store.add("system", f"No agent named {' '.join(cmd_parts[1:])}." if names
+                                      else "No agent is working.", msg_type="system", channel=channel)
+                        await broadcast_status()
+                        continue
                     if cmd == "/continue":
                         router.continue_routing(channel)  # this channel's loop guard, not #general's
                         store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)
@@ -1298,8 +1321,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 if reply_to is not None:
                     reply_to = int(reply_to)
 
+                thread = _thread_parent(event.get("thread"), channel)
                 store.add(sender, text, attachments=attachments, reply_to=reply_to,
-                          channel=channel)
+                          channel=channel, thread=thread)
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])
@@ -1717,7 +1741,9 @@ async def import_history(file: UploadFile = File(...)):
 
 
 @app.get("/api/messages")
-async def get_messages(since_id: int = 0, limit: int = 50, channel: str = ""):
+async def get_messages(since_id: int = 0, limit: int = 50, channel: str = "", thread: int | None = None):
+    if thread is not None:
+        return store.get_thread(thread)  # parent + replies
     ch = channel if channel else None
     if since_id:
         return store.get_since(since_id, channel=ch)
@@ -1754,9 +1780,99 @@ async def api_send(request: Request):
     if not text and not attachments:
         return JSONResponse({"error": "text or attachments required"}, status_code=400)
     channel = body.get("channel", "general")
+    thread = body.get("thread")  # optional: reply inside a thread (parent message id)
+    if thread is not None:
+        thread = _thread_parent(thread, channel)
+        if thread is None:
+            return JSONResponse({"error": "thread: no such parent message in this channel"}, status_code=400)
 
-    msg = store.add(sender, text, channel=channel, attachments=attachments or None)
+    msg = store.add(sender, text, channel=channel, attachments=attachments or None, thread=thread)
     return JSONResponse(msg)
+
+
+# --- Threads, reactions and /stop (control features) ---
+
+def _thread_parent(value, channel: str) -> int | None:
+    """A valid thread parent id for a new reply, or None. Replies to a reply join its thread."""
+    try:
+        parent = store.get_by_id(int(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if not parent or parent.get("channel", "general") != channel:
+        return None
+    return parent.get("thread", parent["id"])
+
+
+@app.post("/api/messages/{msg_id}/react")
+async def react_to_message(msg_id: int, request: Request):
+    """Toggle a reaction. Owner: browser session token. Agents: Bearer token (they can only add
+    or remove their own). Body: {emoji, on?: true|false}. Reactions never wake agents."""
+    import store as store_mod
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    emoji = body.get("emoji")
+    if not store_mod.valid_reaction(emoji):
+        return JSONResponse({"error": "emoji: one emoji"}, status_code=400)
+    inst = _resolve_authenticated_agent(request)
+    who = inst["name"] if inst else room_settings.get("username", "user")
+    on = body.get("on")
+    msg = store.react(msg_id, emoji, who, on=on if isinstance(on, bool) else None)
+    if not msg:
+        return JSONResponse({"error": f"no message #{msg_id}"}, status_code=404)
+    return {"id": msg_id, "reactions": msg.get("reactions", {})}
+
+
+def stop_agents(names: list[str] | None, by: str, channel: str = "general") -> list[str]:
+    """Stop agents and drop their queued triggers; one path for the UI, /stop and IRC.
+    names=None: every agent that is working or has triggers queued. Server-run agents have
+    their CLI/tool process group killed and an in-flight API reply dropped; remote and MCP
+    agents can't be killed, so only their queue is dropped. A stopped agent answers its next
+    @mention as usual. -> names stopped (a notice is posted in `channel`)."""
+    import mcp_bridge
+    qdir = agents._data_dir
+    runners = agent_manager.runners if agent_manager else {}
+    known = (set(registry.get_all_names()) if registry else set()) | set(runners)
+
+    def queued(n):
+        q = qdir / f"{n}_queue.jsonl"
+        return q.exists() and q.stat().st_size > 0
+
+    if names is None:
+        targets = sorted(n for n in known if (n in runners and runners[n].working)
+                         or mcp_bridge.is_active(n) or queued(n))
+    else:
+        targets = []
+        for raw in names:
+            n = raw.lstrip("@").lower()
+            for t in (registry.resolve_to_instances(n) if registry else []) or [n]:
+                if t in known and t not in targets:
+                    targets.append(t)
+    for n in targets:
+        if queued(n):  # queue first, then halt: the runner clears halt just before reading its queue
+            (qdir / f"{n}_queue.jsonl").write_text("", "utf-8")
+        if n in runners:
+            runners[n].halt_turn()
+        mcp_bridge.set_active(n, False)
+    if targets:
+        store.add("system", f"{', '.join('@' + n for n in targets)} stopped by {by}.",
+                  msg_type="system", channel=channel)
+    return targets
+
+
+@app.post("/api/agents/stop")
+async def stop_agents_route(request: Request):
+    """Owner only (session token). Body: {name?: str, channel?: str}. No name = stop all."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    name = str(body.get("name") or "").strip()
+    stopped = await asyncio.to_thread(stop_agents, [name] if name else None,
+                                      room_settings.get("username", "user"), body.get("channel") or "general")
+    await broadcast_status()
+    return {"stopped": stopped}
 
 
 @app.get("/api/status")

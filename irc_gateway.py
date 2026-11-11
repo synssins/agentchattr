@@ -365,6 +365,12 @@ class Gateway:
         if text.lower() in ("!continue", "/continue"):
             self.continue_routing(target.lstrip("#") if target.startswith("#") else None)
             return
+        words = text.split()
+        if words[0].lower() in ("!stop", "/stop"):  # /stop = all working agents, /stop @name = one
+            ch = target[1:] if target.startswith("#") else "general"
+            if not self.hub.stop_agents(words[1:] or None, self.username(), ch):
+                self.hub.store.add("system", "Nothing to stop.", msg_type="system", channel=ch)
+            return
         if target.startswith("#"):
             ch = target[1:]
             if ch not in self.channels():

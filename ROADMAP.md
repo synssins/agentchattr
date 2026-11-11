@@ -17,7 +17,6 @@ Owner decisions in order of delivery. Each phase ships live when its tests pass.
 - `/stop` stops every working agent; `/stop @name` stops one. Stop buttons in the UI.
 - Reactions: multiple emoji per message, including sour, angry and silly. Agents can react in their persona's style.
 - Threads: reply to a message without cluttering the channel.
-- Approval cards for risky actions by full-access agents, with "allow for this session" so they don't repeat.
 
 ## 4. Images
 - ComfyUI image generation through the Nexus comfy_mcp server, registered in Settings > MCP servers and granted per agent.
@@ -38,5 +37,14 @@ Owner decisions in order of delivery. Each phase ships live when its tests pass.
 - Usage dashboard: tokens, cost and speed per agent and channel (from metrics.jsonl).
 - Channel export to Markdown or HTML with artifacts and images.
 - Mobile push notifications for @mentions.
+
+## 8. Channels and people (saved for later)
+- A default agent for every channel, added when the channel is created (option in the create dialog).
+- Private channels: password protected, hidden from everyone who is not invited.
+- Channel invites for other people.
+- Multiple human users (accounts, identities, per-user permissions).
+
+## 9. Approval cards
+- Risky actions by full-access agents ask in chat first, with "allow for this session" so prompts don't repeat.
 
 Not planned: unique notification sounds per agent in General settings (moved to the agent page instead).

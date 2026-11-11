@@ -6,6 +6,7 @@ set through OpenAI-style function calling, run by the server on their behalf:
   load_skill   read an installed skill's instructions (index is in the prompt)
   read_file    read a text file            (every permission level)
   list_dir     list a directory            (every permission level)
+  react        add an emoji reaction to a chat message (every level; wakes nobody)
   write_file   create/overwrite a file     (edit, full)
   run_command  run a command               (full: any shell command;
                                             otherwise only `allowed_commands`)
@@ -70,6 +71,9 @@ def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
            "Latest version unless you give one.", {"id": s, "version": {"type": "integer"}}, ["id"]),
         fn("artifact_update", "Post a new version of a shared artifact: the complete new text. "
            "The channel sees the update.", {"id": s, "content": s, "note": s}, ["id", "content"]),
+        fn("react", "Add an emoji reaction to a chat message (#id from the transcript). Use it instead "
+           "of replying when a reaction says enough. Reactions never wake anyone.",
+           {"message_id": {"type": "integer"}, "emoji": s}, ["message_id", "emoji"]),
     ]
     if perm in ("edit", "full"):
         specs.append(fn("write_file", "Create or overwrite a text file.", {"path": s, "content": s},
@@ -89,6 +93,8 @@ class ToolRunner:
         self.cwd = Path(os.path.expanduser(cwd or "~"))
         self.perm, self.allowed, self.env = perm, allowed, env
         self.protect = Path(protect).resolve()
+        self.react = None   # callable(message_id, emoji) -> str, set by the agent runner
+        self.proc = None    # running run_command process (killed on /stop)
 
     def _path(self, p: str) -> Path:
         path = (self.cwd / os.path.expanduser(p)).resolve()
@@ -106,6 +112,9 @@ class ToolRunner:
         except Exception as exc:  # report to the model; it can try something else
             out = f"error: {exc}"
         return out if len(out) <= MAX_OUT else out[:MAX_OUT] + f"\n…[truncated, {len(out)} chars]"
+
+    def t_react(self, message_id: int, emoji: str) -> str:
+        return self.react(int(message_id), str(emoji)) if self.react else "error: reactions are not available"
 
     def t_load_skill(self, name: str) -> str:
         sk = skills().get(name)
@@ -161,6 +170,15 @@ class ToolRunner:
                 return ("error: pipes and redirects are not allowed at your permission level. Put the text in "
                         "the stdin argument instead, e.g. {\"command\": \"slop-chop fix\", \"stdin\": \"text to clean\"} "
                         "rather than echo \"text\" | slop-chop fix")
-        proc = subprocess.run(argv, cwd=self.cwd, input=stdin or None, capture_output=True, text=True,
-                              timeout=CMD_TIMEOUT, env=self.env)
-        return f"exit {proc.returncode}\n{proc.stdout}" + (f"\n[stderr]\n{proc.stderr}" if proc.stderr else "")
+        # own process group so /stop (agent_runner.kill_group) also kills what the command started
+        self.proc = proc = subprocess.Popen(argv, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, text=True, env=self.env,
+                                            start_new_session=True)
+        try:
+            out, err = proc.communicate(stdin or None, timeout=CMD_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise
+        finally:
+            self.proc = None
+        return f"exit {proc.returncode}\n{out}" + (f"\n[stderr]\n{err}" if err else "")

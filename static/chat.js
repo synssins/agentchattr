@@ -453,7 +453,7 @@ function renderHistoryBatch() {
 // --- WebSocket ---
 
 function handleServerEvent(event) {
-    if (historyLoading && ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed'].includes(event.type)) {
+    if (historyLoading && ['message', 'edit', 'message_update', 'delete', 'clear', 'channel_renamed', 'agent_renamed', 'reaction'].includes(event.type)) {
         pendingLiveEvents.push(event);
         return;
     }
@@ -853,6 +853,7 @@ function dayFloatRefresh() {
 function appendMessage(msg, options = {}) {
     // History replay and a live delivery can contain the same saved message.
     if (document.getElementById(`message-${msg.id}`)) return;
+    if (msg.thread != null && window.Control) { Control.threadReply(msg); return; }  // threads stay out of the timeline
     const container = options.container || document.getElementById('messages');
 
     // Insert date divider if needed
@@ -1005,6 +1006,7 @@ function appendMessage(msg, options = {}) {
         el.innerHTML = `<div class="todo-strip"></div>${isSelf ? '' : avatarHtml}<div class="chat-bubble" style="--bubble-color: ${senderColor}">${replyHtml}<div class="bubble-header"><span class="msg-sender" style="color: ${senderColor}">${escapeHtml(msg.sender)}</span>${rolePillHtml}<span class="msg-time">${msg.time || ''}</span><span class="msg-num">#${msg.id}</span></div><div class="msg-text">${textHtml}</div>${choicesHtml}${attachmentsHtml}<button class="convert-job-pill" onclick="startJobFromMessage(${msg.id}); event.stopPropagation();" title="Convert to job">convert to job</button><button class="bubble-copy" onclick="copyMessage(${msg.id}, event)" title="Copy message"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div><div class="msg-actions"><button class="reply-btn" onclick="startReply(${msg.id}, event)">reply</button><button class="todo-hint" onclick="todoCycle(${msg.id}); event.stopPropagation();">${statusLabel}</button><button class="delete-btn" onclick="deleteClick(${msg.id}, event)" title="Delete">del</button></div>`;
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
+        window.Control?.decorate(el, msg);  // reactions, thread summary, react/thread toolbar
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);
@@ -2408,6 +2410,7 @@ const SLASH_COMMANDS = [
     { cmd: '/summary', desc: 'Summarize recent messages — tag an agent (e.g. /summary @claude)', broadcast: false, needsMention: true },
     { cmd: '/summarise', desc: 'Summarize recent messages — tag an agent (e.g. /summarise @claude)', broadcast: false, needsMention: true, hidden: true },
     { cmd: '/continue', desc: 'Resume after loop guard pauses', broadcast: false },
+    { cmd: '/stop', desc: 'Stop every working agent, or one: /stop @name', broadcast: false },
     { cmd: '/spawn', desc: 'New instance of a server agent in this channel: /spawn claudecode [name]', broadcast: false },
     { cmd: '/review', desc: 'Review against a rulebook: /review Story writing @agent <text or path>', broadcast: false },
     { cmd: '/rename', desc: 'Change an agent\'s @handle: /rename agy-2 Marcus', broadcast: false },

@@ -245,29 +245,44 @@ async def agent_triggers(request: Request, wait: float = 25):
         await asyncio.sleep(0.5)
     lines = qf.read_text("utf-8").splitlines()
     qf.write_text("", "utf-8")
-    channels = []
+    keys = []  # (channel, thread parent id or None), in arrival order
     for line in lines:
         try:
-            ch = json.loads(line).get("channel", "general")
+            entry = json.loads(line)
+            key = (entry.get("channel", "general"), entry.get("thread"))
         except (json.JSONDecodeError, AttributeError):
-            ch = "general"
-        if ch not in channels:
-            channels.append(ch)
+            key = ("general", None)
+        if key not in keys:
+            keys.append(key)
     cursors = _remote_cursors.setdefault(name, {})
+    base = str(request.base_url).rstrip("/")
+    updir = Path(getattr(hub.store, "upload_dir", "uploads")).resolve()
+    mention = re.compile(rf"@({re.escape(name)}|all)(?![\w-])", re.I)
+
+    def view(m):
+        out = {"id": m["id"], "sender": m["sender"], "time": m.get("time"),
+               "text": artifacts.render_for_agents(m["text"], f"GET {base}/api/artifacts/<id>"),
+               "mentions_you": bool(mention.search(m.get("text", ""))),  # which line woke you
+               "attachments": [{"name": a.get("name"), "kind": a.get("kind"), "url": base + a["url"],
+                                "path": str(updir / Path(a["url"]).name)}
+                               for a in m.get("attachments") or [] if a.get("url")]}
+        if m.get("thread") is not None:
+            out["thread"] = m["thread"]
+        return out
+
     out = []
-    for ch in channels:
-        msgs = hub.store.get_since(cursors.get(ch, -1), channel=ch)[-50:]  # ids start at 0
-        if msgs:
-            cursors[ch] = msgs[-1]["id"]
-        base = str(request.base_url).rstrip("/")
-        updir = Path(getattr(hub.store, "upload_dir", "uploads")).resolve()
-        out.append({"channel": ch, "messages": [
-            {"id": m["id"], "sender": m["sender"], "time": m.get("time"),
-             "text": artifacts.render_for_agents(m["text"], f"GET {base}/api/artifacts/<id>"),
-             "attachments": [{"name": a.get("name"), "kind": a.get("kind"), "url": base + a["url"],
-                              "path": str(updir / Path(a["url"]).name)}
-                             for a in m.get("attachments") or [] if a.get("url")]}
-            for m in msgs if m.get("type", "chat") == "chat"]})
+    for ch, thread in keys:
+        if thread is not None:  # a thread: the whole thread; reply with /api/send {"thread": id}
+            msgs = hub.store.get_thread(thread)[-50:]
+        else:
+            msgs = hub.store.get_since(cursors.get(ch, -1), channel=ch)  # ids start at 0
+            if msgs:
+                cursors[ch] = msgs[-1]["id"]
+            msgs = [m for m in msgs if m.get("thread") is None][-50:]  # thread replies stay in threads
+        item = {"channel": ch, "messages": [view(m) for m in msgs if m.get("type", "chat") == "chat"]}
+        if thread is not None:
+            item["thread"] = thread
+        out.append(item)
     return {"triggers": out}
 
 
@@ -315,6 +330,15 @@ shown as online; stop polling for more than ~2 minutes and you go offline.
 ## 3. Reply
 curl -s -X POST {base}/api/send -H "Authorization: Bearer $TOKEN" \\
   -H 'Content-Type: application/json' -d '{{"text": "your reply", "channel": "general"}}'
+
+A trigger that has "thread": <id> came from a thread: its messages are that
+thread (parent + replies). Reply in it by adding "thread": <id> to /api/send.
+Messages marked "mentions_you": true are the ones that named you.
+
+## React instead of replying (never wakes anyone)
+curl -s -X POST {base}/api/messages/7/react -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' -d '{{"emoji": "👍"}}'
+Calling it again with the same emoji removes your reaction. React in your persona's style.
 
 ## Your persona (your lasting identity; keep it distinct from the other agents)
 curl -s -X POST {base}/api/persona -H "Authorization: Bearer $TOKEN" \

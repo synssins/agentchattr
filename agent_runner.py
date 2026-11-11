@@ -49,6 +49,7 @@ MAX_ATTACH_BYTES = 25 * 1024 * 1024
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 # New version of a shared artifact, for agents without the artifact_update tool
 ARTIFACT_UPDATE_RE = re.compile(r"\[artifact-update\s+([A-Za-z0-9_-]{6,24})\]\n?(.*?)\[/artifact-update\]", re.S | re.I)
+REACT_RE = re.compile(r"\[react\s+#?(\d+)\s+([^\]\s]{1,16})\s*\]", re.I)  # [react #123 😂]
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
     "others. It follows you across projects and context resets. To set or rewrite it, put the "
@@ -69,9 +70,28 @@ ROOM_PROMPT = (
     "it is posted as an attachment they can open. Code blocks of 8+ lines become shared artifacts, "
     "shown as [artifact <id> ...]: read one with artifact_read (or its text is included), and post a "
     "new version with artifact_update or by putting [artifact-update <id>]full new text[/artifact-update] "
-    "in your reply. If you have nothing "
+    "in your reply. When a reaction says enough, react instead of "
+    "replying: put [react #id emoji] in your reply (e.g. [react #123 😂]); a reply with only "
+    "reactions posts no message. Pick reactions that fit your persona. If you have nothing "
     "useful to add, reply exactly: " + NO_REPLY
 )
+
+
+def kill_group(proc):
+    """SIGTERM a process started with start_new_session=True and everything it spawned;
+    SIGKILL the group if it is still there 3 s later. No-op when it already exited."""
+    import signal
+    if not proc or proc.poll() is not None:
+        return
+    def sig(s):
+        try:
+            os.killpg(proc.pid, s)
+        except (ProcessLookupError, PermissionError):
+            pass
+    sig(signal.SIGTERM)
+    t = threading.Timer(3, lambda: proc.poll() is None and sig(signal.SIGKILL))
+    t.daemon = True
+    t.start()
 
 
 def _which(cmd: str) -> str | None:
@@ -310,6 +330,9 @@ class Runner:
         self.stop = threading.Event()
         self.working = False
         self.proc: subprocess.Popen | None = None  # in-flight CLI turn, killed on shutdown
+        self.halt = threading.Event()   # /stop: abandon the current turn and queued triggers
+        self.tools = None               # ToolRunner of the in-flight API turn (its command is killed on /stop)
+        self.thread: int | None = None  # parent message id when the current turn answers a thread
         self.resuming: set[str] = set()  # channels whose last turn a restart cut off
 
     @property
@@ -335,6 +358,13 @@ class Runner:
         except Exception:
             log.exception("deregister %s", self.name)
 
+    def halt_turn(self):
+        """/stop: kill the CLI or tool process group now; an API reply still in flight is
+        dropped when it arrives (urllib can't be interrupted). The queue is cleared by the caller."""
+        self.halt.set()
+        for p in (self.proc, getattr(self.tools, "proc", None)):
+            kill_group(p)
+
     def _heartbeat(self):
         import mcp_bridge
         while not self.stop.is_set():
@@ -353,22 +383,26 @@ class Runner:
             self.m.hub.store.add("system", f"@{self.name}'s turn was cut off by a server restart; resuming it.",
                                  msg_type="system", channel=ch)
         while not self.stop.is_set():
-            channels, pending = pending, []
+            self.halt.clear()  # a /stop clears the queue before setting halt, so nothing is lost here
+            work, pending = [(ch, None) for ch in pending], []  # (channel, thread parent id or None)
             try:
                 if qf.exists() and qf.stat().st_size > 0:
                     lines = qf.read_text("utf-8").splitlines()
                     qf.write_text("", "utf-8")
                     for line in lines:
                         try:
-                            ch = json.loads(line).get("channel", "general")
+                            entry = json.loads(line)
+                            key = (entry.get("channel", "general"), entry.get("thread"))
                         except (json.JSONDecodeError, AttributeError):
-                            ch = "general"
-                        if ch not in channels:
-                            channels.append(ch)
+                            key = ("general", None)
+                        if key not in work:
+                            work.append(key)
             except OSError:
                 log.exception("queue read %s", self.name)
-            for ch in channels:
-                self._turn(ch)
+            for ch, thread in work:
+                if self.halt.is_set():
+                    break
+                self._turn(ch, thread)
             self.stop.wait(1)
 
     def _files(self, m: dict) -> list[tuple[str, dict]]:
@@ -424,7 +458,10 @@ class Runner:
     def _addressed(self, channel: str) -> bool:
         """Was the latest message from someone else aimed at this agent by name?
         (@all reaches everyone, but each agent may judge it isn't theirs to answer.)"""
-        for m in reversed(self.m.hub.store.get_recent(20, channel=channel)):
+        store = self.m.hub.store
+        msgs = store.get_thread(self.thread) if self.thread is not None else \
+            [m for m in store.get_recent(40, channel=channel) if m.get("thread") is None]
+        for m in reversed(msgs):
             if m.get("type", "chat") == "chat" and m.get("sender") != self.name:
                 return bool(re.search(rf"@{re.escape(self.name)}(?![\w-])", m.get("text", ""), re.I))
         return False
@@ -500,10 +537,11 @@ class Runner:
                 f"reply exactly {NO_REPLY} (it is not posted). Don't repeat what another agent already said.")
         return "\n\n".join(parts)
 
-    def _turn(self, channel: str):
+    def _turn(self, channel: str, thread: int | None = None):
         # Agents in a channel run at the same time (live chat). Each agent still takes its
         # own triggers one at a time: messages for a busy agent wait in its queue.
         hub = self.m.hub
+        self.thread = thread  # read by _api_turn/_cli_turn/_addressed; the reply goes back there
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
@@ -512,7 +550,13 @@ class Runner:
                 reply = self._api_turn(channel)
             else:
                 reply = self._cli_turn(channel)
+            if self.halt.is_set():
+                log.info("%s was stopped in #%s; reply dropped", self.name, channel)
+                return
             reply = (reply or "").strip()
+            for mid, emoji in REACT_RE.findall(reply):
+                self._react(int(mid), emoji)
+            reply = REACT_RE.sub("", reply).strip()
             found = PERSONA_RE.findall(reply)
             if found:
                 self.m.set_persona(self.name, found[-1].strip())
@@ -532,13 +576,15 @@ class Runner:
                     reply = reply[len(prefix):].strip()
             if (reply and reply != NO_REPLY) or attachments:
                 hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
-                              attachments=attachments)
+                              attachments=attachments, thread=thread)
             else:
                 log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
             if renames:  # after posting, so the reply is re-attributed with the rest
                 note = self.m.rename(self.name, renames[-1].strip())
                 hub.store.add("system", note, msg_type="system", channel=channel)
         except Exception as exc:
+            if self.halt.is_set():
+                return  # killed by /stop: the stop notice says it all
             log.exception("turn failed for %s", self.name)
             why = str(exc)[:200]
             if isinstance(exc, TimeoutError) or "timed out" in why:
@@ -547,18 +593,32 @@ class Runner:
             hub.store.add("system", f"{self.name} failed: {why}", msg_type="system", channel=channel)
         finally:
             self.working = False
+            self.tools = None
             if not self.stop.is_set():  # a shutdown mid-turn keeps the mark so it resumes
                 self.m.set_inflight(self.name, channel, False)
             self.resuming.discard(channel)
+
+    def _react(self, mid: int, emoji: str) -> str:
+        """Add this agent's reaction to message #mid (never wakes anyone)."""
+        import store as store_mod
+        if not store_mod.valid_reaction(emoji):
+            return "error: a reaction is one emoji"
+        if not self.m.hub.store.react(mid, emoji, self.name, on=True):
+            return f"error: no message #{mid}"
+        return f"reacted {emoji} to #{mid}"
 
     def _window(self, channel: str, n: int) -> list[dict]:
         """Between n and 2n recent chat messages. The window's first message stays put until 2n
         messages have piled up, then jumps forward to the newest n, so the start of the
         history is identical across turns and providers can cache it."""
         start = int(self.spec.get("context_from") or 0)
+        if self.thread is not None:  # a thread turn: the context is the thread (parent + replies)
+            return [m for m in self.m.hub.store.get_thread(self.thread)
+                    if m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"][-2 * n:]
         recent = [m for m in self.m.hub.store.get_recent(4 * n + 20, channel=channel)
                   if m["id"] >= start  # spawned/fresh instance: conversation starts there
-                  and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"]
+                  and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"
+                  and m.get("thread") is None]  # thread replies stay out of the channel context
         if not recent:
             return []
         anchors = self.__dict__.setdefault("_anchors", {})
@@ -636,6 +696,8 @@ class Runner:
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
                                         protect=str(Path(self.m.data_dir).resolve()),
                                         agent=self.name, channel=channel)
+        runner.react = self._react
+        self.tools = runner
         try:
             steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
         except (TypeError, ValueError):
@@ -651,6 +713,8 @@ class Runner:
                 log.info("%s: provider rejected tools (%s); answering without them", self.name, exc.code)
                 tools = None
                 continue
+            if self.halt.is_set():
+                return ""  # /stop arrived while the model was answering
             calls = reply.get("tool_calls") or []
             text = reply.get("content") or ""
             if not calls and tools and "<tool_call>" in text and not self.stop.is_set():
@@ -702,17 +766,26 @@ class Runner:
         session = state["sessions"].get(channel)
         cursor = state["cursors"].get(channel, 0)
         store = self.m.hub.store
-        new = store.get_since(cursor, channel=channel) if session else \
-            store.get_recent(int(spec.get("context_messages") or 30), channel=channel)
+        thread = self.thread
+        if thread is not None:  # a thread: send the whole thread (parent + replies); cursors untouched
+            new = [m for m in store.get_thread(thread) if m.get("type", "chat") == "chat"]
+        else:
+            new = store.get_since(cursor, channel=channel) if session else \
+                store.get_recent(int(spec.get("context_messages") or 30), channel=channel)
+            new = [m for m in new if m.get("type", "chat") == "chat" and m.get("sender") != self.name
+                   and m.get("thread") is None]
         start = int(spec.get("context_from") or 0)
-        new = [m for m in new if m.get("type", "chat") == "chat" and m.get("sender") != self.name
-               and m["id"] >= start]
+        new = [m for m in new if m["id"] >= start]
         if not new:
             return ""
         transcript = "\n".join(f"#{m['id']} {m['sender']}: {self._text(m)}" for m in new)
         hint = ("\n\n(Attached files are on disk at the paths shown; open them with your file-reading "
                 "tool to see them.)" if "[attached " in transcript else "")
-        prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
+        if thread is not None:
+            prompt = (f"Thread in #{channel} on message #{thread}:\n\n{transcript}{hint}\n\n"
+                      "Your reply to post in this thread:")
+        else:
+            prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         if channel in self.resuming:
             prompt = RESUME_NOTE + "\n\n" + prompt
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
@@ -724,7 +797,8 @@ class Runner:
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))  # only the secrets granted to this agent
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     stdin=subprocess.DEVNULL, text=True, env=env)
+                                     stdin=subprocess.DEVNULL, text=True, env=env,
+                                     start_new_session=True)  # own process group: /stop kills its children too
         try:
             stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -734,10 +808,16 @@ class Runner:
             code, self.proc = self.proc.returncode, None
         if self.stop.is_set():
             return ""  # agent was removed mid-turn: post nothing
+        if self.halt.is_set():  # /stop: don't hand the stopped request over again next turn
+            if thread is None:
+                state["cursors"][channel] = max(m["id"] for m in new)
+                self.m.save_state()
+            return ""
         text, new_session = parse_cli_output(stdout)
         if code != 0 and not text:
             raise RuntimeError((stderr or stdout or f"exit {code}").strip()[-300:])
-        state["cursors"][channel] = max(m["id"] for m in new)
+        if thread is None:
+            state["cursors"][channel] = max(m["id"] for m in new)
         if new_session:
             state["sessions"][channel] = new_session
         self.m.save_state()

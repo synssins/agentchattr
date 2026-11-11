@@ -203,11 +203,14 @@ def chat_send(
     reply_to: int = -1,
     channel: str = "",
     job_id: int = 0,
+    thread: int = -1,
     ctx: Context | None = None,
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
+    When you were mentioned in a thread, pass thread=<parent message id> so the
+    reply goes into that thread instead of the main channel.
     Channel/job_id resolution:
       - If you pass channel or job_id explicitly, that target is honored.
       - If you omit both, the message is routed to the last channel or
@@ -347,9 +350,17 @@ def chat_send(
         msg_type = "decision"
         metadata = {"choices": clean_choices, "resolved": False}
 
+    thread_id = None
+    if thread >= 0:
+        parent = store.get_by_id(thread)
+        if parent is None:
+            return f"Thread #{thread} not found."
+        thread_id = parent.get("thread", parent["id"])
+        channel = parent.get("channel", "general")  # a thread lives in its parent's channel
+
     msg = store.add(sender, message.strip(), attachments=attachments,
                     reply_to=reply_id, channel=channel,
-                    msg_type=msg_type, metadata=metadata)
+                    msg_type=msg_type, metadata=metadata, thread=thread_id)
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
@@ -427,6 +438,10 @@ def _serialize_messages(msgs: list[dict]) -> str:
             entry["attachments"] = _resolve_attachments(m["attachments"])
         if m.get("reply_to") is not None:
             entry["reply_to"] = m["reply_to"]
+        if m.get("thread") is not None:
+            entry["thread"] = m["thread"]
+        if m.get("reactions"):
+            entry["reactions"] = m["reactions"]
         out.append(entry)
     return json.dumps(out, ensure_ascii=False) if out else ""
 
@@ -583,9 +598,12 @@ def chat_read(
     limit: int = 20,
     channel: str = "",
     job_id: int = 0,
+    thread: int = -1,
     ctx: Context | None = None,
 ) -> str:
     """Read chat messages. Returns JSON array with: id, sender, text, type, time, channel.
+    Pass thread=<parent message id> to read one thread (parent + replies); answer it
+    with chat_send(thread=<same id>).
 
     Smart defaults:
     - First call with sender: returns last `limit` messages (full context).
@@ -641,6 +659,9 @@ def chat_read(
             out.append(entry)
         return json.dumps(out, ensure_ascii=False)
 
+    if thread >= 0:
+        return _serialize_messages(store.get_thread(thread)) or f"Thread #{thread} not found."
+
     ch = channel if channel else None
     # Remember the channel this agent just read so chat_send without an
     # explicit channel defaults here instead of falling back to "general".
@@ -666,6 +687,7 @@ def chat_read(
 
     msgs = msgs[-limit:]
     _update_cursor(sender, msgs, ch)
+    msgs = [m for m in msgs if m.get("thread") is None]  # thread replies: read them with thread=<id>
     serialized = _serialize_messages(msgs)
 
     # Escalating empty-read hints to discourage polling loops
@@ -964,9 +986,26 @@ def chat_artifact_update(sender: str, id: str, content: str, note: str = "",
     return artifacts.update_for(sender, id.strip(), content, note)
 
 
+def chat_react(sender: str, message_id: int, emoji: str, ctx: Context | None = None) -> str:
+    """React to a chat message with one emoji, instead of (or as well as) replying.
+    Calling it again with the same emoji removes your reaction. Reactions never
+    wake other agents. React in your persona's style."""
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    import store as store_mod
+    if not store_mod.valid_reaction(emoji):
+        return "A reaction is one emoji."
+    msg = store.react(int(message_id), emoji, sender)
+    if msg is None:
+        return f"Message #{message_id} not found."
+    mine = sender in (msg.get("reactions") or {}).get(emoji, [])
+    return f"{'Reacted' if mine else 'Removed reaction'} {emoji} on #{message_id}."
+
+
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
-    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
+    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_react,
     chat_artifact_read, chat_artifact_update,
 ]
 

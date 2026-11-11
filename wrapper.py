@@ -507,6 +507,7 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
 
                     # Check if this is a job/activity-scoped trigger
                     job_id = None
+                    thread_id = None
                     custom_prompt = ""
                     for line in lines:
                         line = line.strip()
@@ -516,6 +517,8 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                             data = json.loads(line)
                             if isinstance(data, dict) and "job_id" in data:
                                 job_id = data["job_id"]
+                            if isinstance(data, dict) and data.get("thread") is not None:
+                                thread_id = data["thread"]
                             if isinstance(data, dict):
                                 raw_prompt = data.get("prompt", "")
                                 if isinstance(raw_prompt, str) and raw_prompt.strip():
@@ -527,6 +530,9 @@ def _queue_watcher(get_identity_fn, inject_fn, *, is_multi_instance: bool = Fals
                         prompt = custom_prompt
                     elif job_id:
                         prompt = f"use mcp to read job_id={job_id} - you're mentioned in a job thread, take appropriate action and respond"
+                    elif thread_id is not None:
+                        prompt = (f"use mcp to read #{channel} thread={thread_id} - you're mentioned in a thread, take "
+                                  f"appropriate action and respond with chat_send(thread={thread_id})")
                     else:
                         prompt = f"use mcp to read #{channel} - you're mentioned, take appropriate action and respond"
 

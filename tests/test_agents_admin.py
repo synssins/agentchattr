@@ -390,7 +390,7 @@ class ToolLoopTest(unittest.TestCase):
 
     def test_permission_levels(self):
         names = lambda perm, allowed=(): [t["function"]["name"] for t in self.at.tool_specs(perm, list(allowed))]
-        self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir", "artifact_read", "artifact_update"])
+        self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir", "artifact_read", "artifact_update", "react"])
         self.assertIn("write_file", names("edit"))
         self.assertNotIn("run_command", names("edit"))
         self.assertIn("run_command", names("read", ["slop-chop"]))
