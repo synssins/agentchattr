@@ -65,3 +65,14 @@ class ComfyWorkflowInputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaskGraph(unittest.TestCase):
+    def test_mask_becomes_transparency_and_invert_flips_it(self):
+        g = c._mask_graph("photo.png", "the wheels", 8, False)
+        self.assertEqual(g["3"]["inputs"]["text_input"], "the wheels")
+        self.assertTrue(g["6"]["inputs"]["individual_objects"])   # every matching object, not just one
+        self.assertEqual(g["9"]["inputs"]["alpha"], ["7", 0])     # JoinImageWithAlpha: alpha = 1 - mask
+        inv = c._mask_graph("photo.png", "the wheels", 8, True)
+        self.assertEqual(inv["9"]["inputs"]["alpha"], ["8", 0])
+        self.assertEqual(inv["8"]["class_type"], "InvertMask")

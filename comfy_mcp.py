@@ -348,5 +348,56 @@ def run_workflow(workflow: str, prompt: str = "", negative: str = "", images: li
         return f"error: {exc}"
 
 
+def _mask_graph(image: str, target: str, grow: int, invert: bool) -> dict:
+    """Florence-2 finds `target` (phrase grounding -> boxes), SAM2 outlines it, and the mask becomes
+    the image's transparency: the format the inpaint workflows read their mask from."""
+    mask = ["7", 0]
+    g = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "2": {"class_type": "DownloadAndLoadFlorence2Model",
+              "inputs": {"model": "microsoft/Florence-2-large", "precision": "fp16"}},
+        "3": {"class_type": "Florence2Run", "inputs": {
+            "image": ["1", 0], "florence2_model": ["2", 0], "text_input": target,
+            "task": "caption_to_phrase_grounding", "fill_mask": True, "keep_model_loaded": False,
+            "max_new_tokens": 1024, "num_beams": 3, "do_sample": False, "output_mask_select": "", "seed": 1}},
+        "4": {"class_type": "Florence2toCoordinates", "inputs": {"data": ["3", 3], "index": "", "batch": False}},
+        "5": {"class_type": "DownloadAndLoadSAM2Model", "inputs": {
+            "model": "sam2.1_hiera_large.safetensors", "segmentor": "single_image", "device": "cuda",
+            "precision": "fp16"}},
+        "6": {"class_type": "Sam2Segmentation", "inputs": {
+            "sam2_model": ["5", 0], "image": ["1", 0], "bboxes": ["4", 1], "keep_model_loaded": False,
+            "individual_objects": True}},  # one mask per box, OR-ed; False keeps only one object
+        "7": {"class_type": "GrowMask", "inputs": {"mask": ["6", 0], "expand": grow, "tapered_corners": True}},
+    }
+    if invert:
+        g["8"] = {"class_type": "InvertMask", "inputs": {"mask": ["7", 0]}}
+        mask = ["8", 0]
+    g["9"] = {"class_type": "JoinImageWithAlpha", "inputs": {"image": ["1", 0], "alpha": mask}}  # alpha = 1 - mask
+    g["10"] = {"class_type": "SaveImage", "inputs": {"images": ["9", 0], "filename_prefix": "agenthub/masked"}}
+    return g
+
+
+@mcp.tool()
+def make_mask(image: str, target: str, grow: int = 8, invert: bool = False) -> str:
+    """Mark an object in an image as the area to change, from words: e.g. target="the wheels",
+    "the bicycle frame", "her hair", "the sky". Returns a copy of the image whose transparent area is
+    the mask; pass that file to an inpaint workflow with run_workflow(images=[...]).
+    grow: pixels to widen the mask (default 8). invert: mask everything EXCEPT the target.
+    Works on objects, not on spatial phrases like "the left half"; for those use an instruction-edit
+    workflow (e.g. KreaEdit2, Gwen3) with the phrase in the prompt instead."""
+    if not target.strip():
+        return "error: say what to mask, e.g. target='the wheels'"
+    try:
+        with httpx.Client(timeout=60) as client:
+            g = _mask_graph(_upload(client, image), target.strip(), int(grow), bool(invert))
+            files = [f for f in _save_outputs(client, _run(client, g)) if f.suffix.lower() == ".png"]
+    except (ValueError, RuntimeError, TimeoutError, httpx.HTTPError) as exc:
+        return f"error: {exc}"
+    if not files:
+        return f"error: nothing matching '{target}' was found in the image"
+    return (f"Mask for '{target}'{' (inverted)' if invert else ''}: transparent area = the part to change.\n"
+            f"[attach: {files[0]}]")
+
+
 if __name__ == "__main__":
     mcp.run()
