@@ -241,8 +241,9 @@
     // ------------------------------------------------------------ Rulebooks
     async function renderRulebooks(panel, editing) {
         heading(panel, 'Rulebooks',
-            'Guides for kinds of work: story writing, code & processes, docs. Attach one to channels (everyone there follows it) or agents (they follow it everywhere). Every agent can open any rulebook on request. Ask for a review with: /review <rulebook> @agent <text or file path>.');
-        const [books, agents] = await Promise.all([api('GET', '/api/admin/rulebooks'), api('GET', '/api/managed-agents')]);
+            'Guides for kinds of work: story writing, code & processes, docs. Agents open one only when you ask ("use the story rulebook"), so unused rulebooks cost no context. Attach one to channels or agents to have it followed every turn. Ask for a review with: /review <rulebook> @agent <text or file path>.');
+        const [books, agents, access] = await Promise.all([api('GET', '/api/admin/rulebooks'), api('GET', '/api/managed-agents'), api('GET', '/api/admin/rulebook-access')]);
+        const fine = access.fine_grained;
         const channels = (typeof channelList !== 'undefined' && channelList.length) ? channelList : ['general'];
         const e = editing || null;
         if (e) {
@@ -256,6 +257,7 @@
             });
             const chans = pick(channels, e.channels, '#');
             const ags = pick(agents.map(a => a.name), e.agents, '@');
+            const rds = pick(agents.map(a => a.name), e.readers, '@');
             const form = el('form', { class: 'agents-form' },
                 el('h2', { text: e.name ? `Edit "${e.name}"` : 'New rulebook' }),
                 el('div', { class: 'agents-inline' },
@@ -266,6 +268,8 @@
                     el('div', { class: 'agents-inline' }, ...chans.map(x => x.label))),
                 el('div', { class: 'agents-field' }, el('span', { text: 'Agents that always follow it' }),
                     el('div', { class: 'agents-inline' }, ...ags.map(x => x.label))),
+                fine ? el('div', { class: 'agents-field' }, el('span', { text: 'Agents that can open it on request (fine-grained access)' }),
+                    el('div', { class: 'agents-inline' }, ...rds.map(x => x.label))) : '',
                 el('div', { class: 'agents-actions' },
                     el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('rulebooks') }),
                     el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save rulebook' })));
@@ -275,7 +279,8 @@
                     await api('POST', '/api/admin/rulebooks', { original: e.name || null, name: name.value.trim(),
                         description: desc.value.trim(), text: text.value,
                         channels: chans.filter(x => x.cb.checked).map(x => x.cb.value),
-                        agents: ags.filter(x => x.cb.checked).map(x => x.cb.value) });
+                        agents: ags.filter(x => x.cb.checked).map(x => x.cb.value),
+                        readers: rds.filter(x => x.cb.checked).map(x => x.cb.value) });
                     show('rulebooks');
                 } catch (err) { alert(err.message); }
             });
@@ -287,9 +292,18 @@
         panel.append(el('button', { class: 'agents-btn primary', text: '+ New rulebook', onclick: () => {
             const p = document.getElementById('settings-panel'); renderRulebooks(p, {});
         } }));
+        const fineBox = el('input', { type: 'checkbox', checked: fine, onchange: async () => {
+            try { await api('POST', '/api/admin/rulebook-access', { fine_grained: fineBox.checked }); show('rulebooks'); }
+            catch (err) { alert(err.message); }
+        } });
+        panel.append(el('details', { class: 'agents-field', open: fine },
+            el('summary', { text: 'Advanced' }),
+            el('label', { class: 'agents-toggle' }, fineBox,
+                el('span', { text: 'Fine-grained access: agents can open only rulebooks attached to them, their channel, or listing them as a reader. Off: every agent can open every rulebook.' }))));
         panel.append(table(['Rulebook', 'Applies to', ''], books.map(b => [
             el('div', {}, el('strong', { text: b.name }), el('div', { class: 'agents-sub', text: b.description || '' })),
-            [...(b.channels || []).map(c => '#' + c), ...(b.agents || []).map(a => '@' + a)].join(' ') || 'on request only',
+            ([...(b.channels || []).map(c => '#' + c), ...(b.agents || []).map(a => '@' + a)].join(' ') || 'on request only')
+                + (fine ? ' · can open: ' + ((b.readers || []).map(a => '@' + a).join(' ') || 'attached only') : ''),
             el('div', { class: 'agents-inline' },
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
                     const p = document.getElementById('settings-panel'); renderRulebooks(p, b);

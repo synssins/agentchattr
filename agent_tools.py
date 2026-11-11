@@ -11,6 +11,7 @@ set through OpenAI-style function calling, run by the server on their behalf:
   run_command  run a command               (full: any shell command;
                                             otherwise only `allowed_commands`)
   artifact_read / artifact_update   shared code artifacts of the agent's channels
+  rulebook     open a rulebook by name or keyword (every level)
 
 Skills are discovered from ~/.agents/skills and ~/.claude/skills, so anything
 installed there shows up for every agent without config.
@@ -71,6 +72,8 @@ def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
            "Latest version unless you give one.", {"id": s, "version": {"type": "integer"}}, ["id"]),
         fn("artifact_update", "Post a new version of a shared artifact: the complete new text. "
            "The channel sees the update.", {"id": s, "content": s, "note": s}, ["id", "content"]),
+        fn("rulebook", "Open a rulebook (a guide for a kind of work) by name or keyword; an empty query "
+           "lists them. Use it only when the user asks for a rulebook.", {"query": s}, []),
         fn("react", "Add an emoji reaction to a chat message (#id from the transcript). Use it instead "
            "of replying when a reaction says enough. Reactions never wake anyone.",
            {"message_id": {"type": "integer"}, "emoji": s}, ["message_id", "emoji"]),
@@ -115,6 +118,10 @@ class ToolRunner:
 
     def t_react(self, message_id: int, emoji: str) -> str:
         return self.react(int(message_id), str(emoji)) if self.react else "error: reactions are not available"
+
+    def t_rulebook(self, query: str = "") -> str:
+        import rulebooks
+        return rulebooks.lookup(self.agent, query, self.channel)
 
     def t_load_skill(self, name: str) -> str:
         sk = skills().get(name)

@@ -1,7 +1,8 @@
 """Rulebooks: named, long-form guides for kinds of work (story writing, code &
 processes, docs, ...). Attach one to channels (everyone there follows it) and/or
 agents (they follow it everywhere). Attached rulebooks go into the agent's prompt
-in full; the rest are listed with a file path so any agent can open one on demand.
+in full; the rest stay out of the prompt until an agent opens one with the rulebook
+tool. Access is open to every agent unless fine-grained access is on (see visible()).
 
 Stored in data/rulebooks.json; each is mirrored to <root>/rulebooks/<slug>.md,
 outside the protected data folder, so CLI agents can read it with their file tools.
@@ -94,20 +95,59 @@ def find(name: str) -> dict | None:
     return next((b for b in load() if slug(b["name"]) == want or b["name"].lower() == name.lower()), None)
 
 
-def prompt_for(agent: str, channel: str) -> str:
-    """Prompt section: attached rulebooks in full, the rest as a list with paths."""
+def fine_grained() -> bool:
+    """Advanced setting. Off (default): every agent can open every rulebook. On: an agent can
+    open only rulebooks that name it as a reader, attach to it, or attach to its channel."""
+    try:
+        return bool(json.loads((data_dir / "rulebook_access.json").read_text("utf-8")).get("fine_grained"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_fine_grained(on: bool):
+    with _lock:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "rulebook_access.json").write_text(json.dumps({"fine_grained": bool(on)}), "utf-8")
+
+
+def visible(agent: str, channel: str = "") -> list[dict]:
     books = load()
+    if not fine_grained():
+        return books
+    return [b for b in books if agent in b.get("readers", []) or agent in b.get("agents", [])
+            or (channel and channel in b.get("channels", []))]
+
+
+def lookup(agent: str, query: str, channel: str = "") -> str:
+    """The rulebook tool: one match returns its text; several ask the agent to check with the user."""
+    books = visible(agent, channel)
     if not books:
-        return ""
+        return "No rulebooks are available to you."
+    listing = lambda bs: "\n".join(f"- {b['name']}: {b.get('description', '')}" for b in bs)
+    q = (query or "").strip().lower()
+    if not q:
+        return "Rulebooks:\n" + listing(books)
+    hits = ([b for b in books if b["name"].lower() == q or slug(b["name"]) == slug(q)]
+            or [b for b in books if all(w in f"{b['name']} {b.get('description', '')}".lower() for w in q.split())])
+    if len(hits) == 1:
+        return f"Rulebook \"{hits[0]['name']}\" (follow it):\n{hits[0].get('text', '')}"
+    if hits:
+        return "Several rulebooks match. Ask the user which one they mean:\n" + listing(hits)
+    return f"No rulebook matches \"{query}\". Available:\n" + listing(books)
+
+
+def prompt_for(agent: str, channel: str) -> str:
+    """Prompt section: attached rulebooks in full; the rest only as a one-line pointer to the
+    rulebook tool, so they cost no context until someone asks for one."""
+    books = visible(agent, channel)
     on = [b for b in books if agent in b.get("agents", []) or channel in b.get("channels", [])]
-    off = [b for b in books if b not in on]
-    parts = []
-    for b in on:
-        parts.append(f"Rulebook \"{b['name']}\" (follow it here):\n{b.get('text', '')}")
-    if off:
-        parts.append("Other rulebooks you can open with your file tool when asked or when the work "
-                     "fits: " + "; ".join(f"\"{b['name']}\" ({b.get('description', '')}) at {path_of(b)}"
-                                          for b in off))
+    parts = [f"Rulebook \"{b['name']}\" (follow it here):\n{b.get('text', '')}" for b in on]
+    if len(on) < len(books):
+        parts.append("More rulebooks (guides for kinds of work) are available on request. Only when the user "
+                     "asks you to use or follow one, call the rulebook tool (chat_rulebook on the chat MCP "
+                     "server) with its name or a keyword; an empty query lists them. If several match, "
+                     "ask the user which one they mean."
+                     + ("" if fine_grained() else f" Without that tool, they are .md files in {md_dir.resolve()}."))
     return "\n\n".join(parts)
 
 

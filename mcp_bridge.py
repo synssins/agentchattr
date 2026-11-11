@@ -986,6 +986,16 @@ def chat_artifact_update(sender: str, id: str, content: str, note: str = "",
     return artifacts.update_for(sender, id.strip(), content, note)
 
 
+def chat_rulebook(sender: str, query: str = "", channel: str = "", ctx: Context | None = None) -> str:
+    """Open a rulebook (a guide for a kind of work) by name or keyword; an empty query lists
+    them. Use it only when the user asks for a rulebook. If several match, ask the user which."""
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    import rulebooks
+    return rulebooks.lookup(sender, query, channel.strip().lstrip("#"))
+
+
 def chat_react(sender: str, message_id: int, emoji: str, ctx: Context | None = None) -> str:
     """React to a chat message with one emoji, instead of (or as well as) replying.
     Calling it again with the same emoji removes your reaction. Reactions never
@@ -1006,7 +1016,7 @@ def chat_react(sender: str, message_id: int, emoji: str, ctx: Context | None = N
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_rules, chat_decision,
     chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job, chat_react,
-    chat_artifact_read, chat_artifact_update,
+    chat_artifact_read, chat_artifact_update, chat_rulebook,
 ]
 
 

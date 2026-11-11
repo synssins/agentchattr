@@ -398,7 +398,7 @@ class ToolLoopTest(unittest.TestCase):
 
     def test_permission_levels(self):
         names = lambda perm, allowed=(): [t["function"]["name"] for t in self.at.tool_specs(perm, list(allowed))]
-        self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir", "artifact_read", "artifact_update", "react"])
+        self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir", "artifact_read", "artifact_update", "rulebook", "react"])
         self.assertIn("write_file", names("edit"))
         self.assertNotIn("run_command", names("edit"))
         self.assertIn("run_command", names("read", ["slop-chop"]))
@@ -593,7 +593,7 @@ class RulebooksTest(unittest.TestCase):
         self.rb.save(books)
         p = self.rb.prompt_for("lazlo", "general")
         self.assertIn("Bespoke is bad", p)                       # attached to the agent: in full
-        self.assertIn("story-writing.md", p)                       # others: listed with a path
+        self.assertIn("rulebook tool", p)                          # others: a pointer, not a list
         self.assertNotIn("Show through action", p)
         self.assertIn("Show through action", self.rb.prompt_for("kestrel", "fiction"))  # channel attach
         self.rb.rename_agent("lazlo", "marcus")

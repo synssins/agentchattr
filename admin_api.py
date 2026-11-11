@@ -569,9 +569,23 @@ async def rulebooks_upsert(request: Request):
     books.append({"name": name, "description": str(body.get("description", ""))[:200],
                   "text": str(body.get("text", ""))[:20000],
                   "channels": [str(c) for c in body.get("channels", [])],
-                  "agents": [str(a) for a in body.get("agents", [])]})
+                  "agents": [str(a) for a in body.get("agents", [])],
+                  "readers": [str(a) for a in body.get("readers", [])]})
     rulebooks.save(books)
     return await rulebooks_list()
+
+
+@router.get("/api/admin/rulebook-access")
+async def rulebook_access_get():
+    import rulebooks
+    return {"fine_grained": rulebooks.fine_grained()}
+
+
+@router.post("/api/admin/rulebook-access")
+async def rulebook_access_set(request: Request):
+    import rulebooks
+    rulebooks.set_fine_grained(bool((await request.json()).get("fine_grained")))
+    return await rulebook_access_get()
 
 
 @router.delete("/api/admin/rulebooks/{name}")
