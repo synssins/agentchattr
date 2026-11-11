@@ -698,6 +698,10 @@ class Runner:
                                         agent=self.name, channel=channel)
         runner.react = self._react
         self.tools = runner
+        made: list[str] = []  # files MCP tools produced ([attach: path]); attached to the reply
+
+        def with_files(reply: str) -> str:
+            return reply + "".join(f"\n[attach: {p}]" for p in made if p not in reply)
         try:
             steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
         except (TypeError, ValueError):
@@ -729,7 +733,7 @@ class Runner:
                     "answer in plain text. There is no separate grep or read tool.)")})
                 continue
             if not calls or self.stop.is_set():
-                return text
+                return with_files(text)
             # keep reasoning_details: Gemini (via OpenRouter) needs its thought signatures back
             msgs.append({k: v for k, v in reply.items() if k in ("content", "tool_calls", "reasoning_details")}
                         | {"role": "assistant", "content": text, "tool_calls": calls})
@@ -744,7 +748,9 @@ class Runner:
                 if fn.get("name") in mcp_names:
                     srv, tool = mcp_names[fn["name"]]
                     try:
-                        out = _spill(self.name, fn["name"], mcp_hub.call_tool(srv, tool, args))
+                        out = mcp_hub.call_tool(srv, tool, args)
+                        made += [p for p in ATTACH_RE.findall(out) if p not in made]  # e.g. generated images
+                        out = _spill(self.name, fn["name"], out)
                     except BaseException as exc:  # connection errors arrive as ExceptionGroups
                         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                             raise
@@ -757,8 +763,8 @@ class Runner:
         msgs.append({"role": "user", "content": (
             f"(You have used all {steps} tool steps for this turn. Don't call tools. Post what you did, "
             "what you found, and exactly what is left, so the work can continue next turn.)")})
-        return call_api_message(spec, system, msgs, None).get("content") or \
-            f"(stopped after {steps} tool steps without a summary)"
+        return with_files(call_api_message(spec, system, msgs, None).get("content") or
+                          f"(stopped after {steps} tool steps without a summary)")
 
     def _cli_turn(self, channel: str) -> str:
         spec = self.spec

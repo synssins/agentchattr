@@ -328,6 +328,7 @@
                 el('label', { class: 'agents-field' }, el('span', { text: 'Command' }), command),
                 el('label', { class: 'agents-field' }, el('span', { text: 'Arguments (space-separated)' }), args)),
             el('label', { class: 'agents-field' }, el('span', { text: 'Environment (values are write-only)' }), env));
+        const timeout = el('input', { type: 'number', min: '1', max: '3600', value: e.timeout || '', placeholder: '120' });
         const sync = () => { httpBox.hidden = transport.value !== 'http'; stdioBox.hidden = transport.value !== 'stdio'; };
         transport.addEventListener('change', sync);
         sync();
@@ -340,7 +341,8 @@
             el('strong', { text: e.name ? `Edit ${e.name}` : 'Add an MCP server' }),
             el('div', { class: 'agents-inline' },
                 el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
-                el('label', { class: 'agents-field' }, el('span', { text: 'Type' }), transport)),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Type' }), transport),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Tool timeout (seconds)' }), timeout)),
             httpBox, stdioBox,
             el('div', { class: 'agents-field' }, el('span', { text: 'Agents allowed to use it' }),
                 boxes.length ? el('div', { class: 'agents-inline' }, ...boxes.map(b => b.label))
@@ -354,7 +356,8 @@
                 await api('POST', '/api/admin/mcp', { name: name.value.trim(), transport: transport.value,
                     url: url.value.trim(), headers: headers.value, command: command.value.trim(),
                     args: args.value.trim() ? args.value.trim().split(/\s+/) : [], env: env.value,
-                    grants: boxes.filter(b => b.cb.checked).map(b => b.cb.value), enabled: true });
+                    grants: boxes.filter(b => b.cb.checked).map(b => b.cb.value), enabled: true,
+                    timeout: timeout.value ? Number(timeout.value) : null });
                 show('mcp');
             } catch (err) { alert(err.message); }
         });

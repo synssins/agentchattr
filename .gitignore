@@ -22,3 +22,4 @@ goals.py
 pr-reviews/
 agentchattr-*.zip
 rulebooks/
+generated/

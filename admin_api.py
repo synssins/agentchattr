@@ -472,6 +472,11 @@ async def mcp_upsert(request: Request):
         old = next((s for s in items if s["name"] == name), {})
         entry = {"name": name, "transport": transport, "enabled": bool(body.get("enabled", True)),
                  "grants": [str(g) for g in body.get("grants", [])], "updated": _now()}
+        try:  # seconds a tool call may take (image generation needs minutes); blank = default
+            if int(body.get("timeout") or 0) > 0:
+                entry["timeout"] = min(int(body["timeout"]), 3600)
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "timeout: whole seconds"}, status_code=400)
         if transport == "stdio":
             cmd = str(body.get("command", "")).strip()
             if not cmd:

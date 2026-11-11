@@ -81,18 +81,19 @@ def _refresh(name: str) -> dict:
 
 async def _with_session(server: dict, fn):
     from mcp import ClientSession
+    timeout = timedelta(seconds=int(server.get("timeout") or CALL_TIMEOUT))  # e.g. image generation
     if server.get("transport") == "stdio":
         from mcp.client.stdio import StdioServerParameters, stdio_client
         params = StdioServerParameters(command=server["command"], args=server.get("args", []),
                                        env={**os.environ, **server.get("env", {})})
         async with stdio_client(params) as (r, w):
-            async with ClientSession(r, w, read_timeout_seconds=timedelta(seconds=CALL_TIMEOUT)) as s:
+            async with ClientSession(r, w, read_timeout_seconds=timeout) as s:
                 await s.initialize()
                 return await fn(s)
     from mcp.client.streamable_http import streamablehttp_client
     async with streamablehttp_client(server["url"], headers=_headers(server) or None,
-                                     timeout=30, sse_read_timeout=CALL_TIMEOUT) as (r, w, _):
-        async with ClientSession(r, w, read_timeout_seconds=timedelta(seconds=CALL_TIMEOUT)) as s:
+                                     timeout=30, sse_read_timeout=timeout.total_seconds()) as (r, w, _):
+        async with ClientSession(r, w, read_timeout_seconds=timeout) as s:
             await s.initialize()
             return await fn(s)
 
