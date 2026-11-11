@@ -90,6 +90,25 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+SPILL_DIR = Path.home() / ".cache" / "agenthub" / "mcp-output"   # outside the data dir, so read_file works
+
+
+def _spill(agent: str, tool: str, out: str) -> str:
+    """Long MCP results: save the whole text and tell the agent where, instead of cutting silently."""
+    import agent_tools
+    if len(out) <= agent_tools.MAX_OUT:
+        return out
+    d = SPILL_DIR / re.sub(r"[^A-Za-z0-9_-]", "_", agent)
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{re.sub(r'[^A-Za-z0-9_-]', '_', tool)}.txt"
+    try:  # read_file pages by line; one-line JSON would only be cut again
+        body = json.dumps(json.loads(out), indent=2, ensure_ascii=False)
+    except ValueError:
+        body = out
+    path.write_text(body, encoding="utf-8")
+    note = (f"\n…[result is {len(out)} chars; only the first part is shown. The complete raw result "
+            f"is saved at {path}. Read it with read_file (use offset/limit to page).]")
+    return out[:agent_tools.MAX_OUT - len(note)] + note
 
 
 def _to_anthropic(content):
@@ -639,7 +658,7 @@ class Runner:
                 if fn.get("name") in mcp_names:
                     srv, tool = mcp_names[fn["name"]]
                     try:
-                        out = mcp_hub.call_tool(srv, tool, args)[:agent_tools.MAX_OUT]
+                        out = _spill(self.name, fn["name"], mcp_hub.call_tool(srv, tool, args))
                     except BaseException as exc:  # connection errors arrive as ExceptionGroups
                         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                             raise

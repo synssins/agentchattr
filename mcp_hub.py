@@ -44,6 +44,39 @@ def safe(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)
 
 
+def _headers(server: dict) -> dict:
+    """Static headers, plus a fresh OAuth bearer for servers authorised with mcp_oauth.py."""
+    hdr = dict(server.get("headers") or {})
+    oa = server.get("oauth")
+    if not oa:
+        return hdr
+    with _lock:
+        oa = next((s.get("oauth") for s in servers() if s["name"] == server["name"]), None) or oa
+        if oa.get("expires_at", 0) < time.time() + 60:
+            oa = _refresh(server["name"])
+    hdr["Authorization"] = f"Bearer {oa['access_token']}"
+    return hdr
+
+
+def _refresh(name: str) -> dict:
+    import urllib.parse
+    import urllib.request
+    adm = _admin()
+    with adm._lock:
+        items = adm._load("mcp_servers.json", [])
+        srv = next(s for s in items if s["name"] == name)
+        oa = srv["oauth"]
+        body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": oa["refresh_token"],
+                                       "client_id": oa["client_id"]}).encode()
+        with urllib.request.urlopen(urllib.request.Request(oa["token_endpoint"], body), timeout=30) as r:
+            tok = json.load(r)
+        oa["access_token"] = tok["access_token"]
+        oa["refresh_token"] = tok.get("refresh_token", oa["refresh_token"])  # rotated tokens are single-use
+        oa["expires_at"] = int(time.time()) + int(tok.get("expires_in", 3600))
+        adm._save("mcp_servers.json", items)
+        return oa
+
+
 # ------------------------------------------------------------------ client
 
 async def _with_session(server: dict, fn):
@@ -57,7 +90,7 @@ async def _with_session(server: dict, fn):
                 await s.initialize()
                 return await fn(s)
     from mcp.client.streamable_http import streamablehttp_client
-    async with streamablehttp_client(server["url"], headers=server.get("headers") or None,
+    async with streamablehttp_client(server["url"], headers=_headers(server) or None,
                                      timeout=30, sse_read_timeout=CALL_TIMEOUT) as (r, w, _):
         async with ClientSession(r, w, read_timeout_seconds=timedelta(seconds=CALL_TIMEOUT)) as s:
             await s.initialize()
@@ -133,7 +166,7 @@ def claude_config(agent: str, data_dir: str) -> tuple[str | None, list[str]]:
             cfg["mcpServers"][safe(s["name"])] = {"command": s["command"], "args": s.get("args", []),
                                                   "env": s.get("env", {})}
         else:
-            cfg["mcpServers"][safe(s["name"])] = {"type": "http", "url": s["url"], "headers": s.get("headers", {})}
+            cfg["mcpServers"][safe(s["name"])] = {"type": "http", "url": s["url"], "headers": _headers(s)}
     d = Path(data_dir) / "mcp"
     d.mkdir(mode=0o700, exist_ok=True)
     path = d / f"{safe(agent)}.json"

@@ -403,7 +403,8 @@ async def secrets_delete(name: str):
 # ---------------------------------------------------------------- MCP servers
 
 def _mcp_public(s: dict) -> dict:
-    out = {k: v for k, v in s.items() if k not in ("headers", "env")}
+    out = {k: v for k, v in s.items() if k not in ("headers", "env", "oauth")}
+    out["oauth"] = bool(s.get("oauth"))
     out["header_names"] = sorted((s.get("headers") or {}).keys())   # values stay on the server
     out["env_names"] = sorted((s.get("env") or {}).keys())
     return out
@@ -452,6 +453,8 @@ async def mcp_upsert(request: Request):
             entry["url"] = url
             hdr = _kv(body.get("headers"))
             entry["headers"] = {k: (v or (old.get("headers") or {}).get(k, "")) for k, v in hdr.items()}
+            if old.get("oauth") and old.get("url") == url:
+                entry["oauth"] = old["oauth"]   # set by mcp_oauth.py; keep it across edits
         else:
             return JSONResponse({"error": "transport must be http or stdio"}, status_code=400)
         items = [s for s in items if s["name"] != name] + [entry]
@@ -481,6 +484,31 @@ async def mcp_test(name: str):
         msg = str(detail[0]) if detail else str(exc)
         return JSONResponse({"error": f"could not connect: {msg[:300] or type(exc).__name__}"}, status_code=502)
     return {"tools": [t["name"] for t in tools]}
+
+
+@router.post("/api/admin/mcp/{name}/oauth/start")
+async def mcp_oauth_start(name: str):
+    import mcp_oauth
+    try:
+        return {"url": await asyncio.to_thread(mcp_oauth.start, name, data_dir)}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)[:300] or type(exc).__name__}, status_code=400)
+
+
+@router.post("/api/admin/mcp/{name}/oauth/finish")
+async def mcp_oauth_finish(name: str, request: Request):
+    import mcp_hub
+    import mcp_oauth
+    landed = str((await request.json()).get("url", "")).strip()
+    try:
+        def locked():
+            with _lock:  # finish rewrites mcp_servers.json
+                return mcp_oauth.finish(name, landed, data_dir)
+        msg = await asyncio.to_thread(locked)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)[:300] or type(exc).__name__}, status_code=400)
+    mcp_hub._cache.pop(name, None)
+    return {"message": msg}
 
 
 # ---------------------------------------------------------------- rulebooks

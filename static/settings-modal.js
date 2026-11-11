@@ -346,6 +346,42 @@
             } catch (err) { alert(err.message); }
         });
         panel.append(form);
+        // OAuth sign-in: the provider only redirects to 127.0.0.1, so the browser lands on a
+        // dead page whose address holds the code; the user pastes that address back here.
+        const oauthSlot = el('div');
+        panel.append(oauthSlot);
+        async function oauthBox(x) {
+            oauthSlot.textContent = '';
+            const status = el('small', { text: 'Contacting the server…' });
+            const box = el('div', { class: 'agents-form settings-secret-box' },
+                el('strong', { text: `Sign in to ${x.name}` }), status);
+            oauthSlot.append(box);
+            box.scrollIntoView({ block: 'nearest' });
+            let url;
+            try { url = (await api('POST', `/api/admin/mcp/${encodeURIComponent(x.name)}/oauth/start`)).url; }
+            catch (err) { status.textContent = err.message; return; }
+            const landed = el('input', { placeholder: 'http://127.0.0.1:8765/callback?code=…&state=…',
+                'aria-label': 'Address the browser landed on' });
+            const done = el('button', { type: 'submit', class: 'agents-btn primary', text: 'Finish sign-in' });
+            const step2 = el('form', { class: 'agents-field' },
+                el('span', { text: '2. After approving, the new tab shows "can\'t connect" at 127.0.0.1. Copy that whole address and paste it here:' }),
+                landed, el('div', { class: 'agents-actions' },
+                    el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => { oauthSlot.textContent = ''; } }),
+                    done));
+            step2.addEventListener('submit', async (ev) => {
+                ev.preventDefault();
+                done.disabled = true;
+                try {
+                    const r = await api('POST', `/api/admin/mcp/${encodeURIComponent(x.name)}/oauth/finish`, { url: landed.value.trim() });
+                    alert(r.message);
+                    show('mcp');
+                } catch (err) { status.textContent = err.message; done.disabled = false; }
+            });
+            status.textContent = '';
+            status.append('1. ', el('a', { href: url, target: '_blank', rel: 'noopener noreferrer',
+                text: 'Open the sign-in page in a new tab' }), ' and approve access.');
+            box.append(step2);
+        }
         if (servers.length) panel.append(table(['Name', 'Where', 'Allowed agents', 'Tools', ''], servers.map(x => {
             const tools = el('span', { text: '—' });
             return [x.name, x.transport === 'stdio' ? `${x.command} ${(x.args || []).join(' ')}` : x.url,
@@ -358,6 +394,8 @@
                             tools.textContent = `${r.tools.length}: ${r.tools.slice(0, 8).join(', ')}${r.tools.length > 8 ? ', …' : ''}`;
                         } catch (err) { tools.textContent = err.message; }
                     } }),
+                    x.transport === 'stdio' ? null : el('button', { class: 'agents-btn',
+                        text: x.oauth ? 'Sign in again' : 'Sign in (OAuth)', onclick: () => oauthBox(x) }),
                     el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
                         const p = document.getElementById('settings-panel'); p.textContent = ''; renderMcp(p, x);
                     } }),
