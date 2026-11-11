@@ -2,10 +2,16 @@
 
 import json
 import os
+import re
 import time
 import threading
 import uuid
 from pathlib import Path
+
+
+def valid_reaction(emoji) -> bool:
+    """A reaction is a short emoji: no letters, digits, spaces or markup."""
+    return isinstance(emoji, str) and 0 < len(emoji) <= 16 and not re.search(r"[\sA-Za-z0-9<>&\"'`\[\]]", emoji)
 
 
 class MessageStore:
@@ -20,6 +26,7 @@ class MessageStore:
         self._callbacks: list = []  # called on each new message
         self._todo_callbacks: list = []  # called on todo changes
         self._delete_callbacks: list = []  # called on message deletion
+        self._reaction_callbacks: list = []  # called on reaction changes (never routes)
         self.upload_dir = self._path.parent.parent / "uploads"  # Default fallback
         self._load()
         self._load_todos()
@@ -56,6 +63,7 @@ class MessageStore:
             uid: str | None = None,
             timestamp: float | None = None,
             time_str: str | None = None,
+            thread: int | None = None,
             _bulk: bool = False) -> dict:
         with self._lock:
             ts = timestamp if timestamp is not None else time.time()
@@ -72,6 +80,8 @@ class MessageStore:
             }
             if reply_to is not None:
                 msg["reply_to"] = reply_to
+            if thread is not None:
+                msg["thread"] = thread
             if metadata:
                 msg["metadata"] = metadata
             self._next_id += 1
@@ -134,6 +144,45 @@ class MessageStore:
             if channel:
                 msgs = [m for m in msgs if m.get("channel", "general") == channel]
             return msgs
+
+    # --- Threads and reactions ---
+
+    def get_thread(self, parent_id: int) -> list[dict]:
+        """The parent message followed by its thread replies (empty if no such parent)."""
+        with self._lock:
+            parent = [m for m in self._messages if m["id"] == parent_id]
+            return parent + [m for m in self._messages if m.get("thread") == parent_id] if parent else []
+
+    def on_reaction(self, callback):
+        """Register a callback(msg) called after a message's reactions change."""
+        self._reaction_callbacks.append(callback)
+
+    def react(self, msg_id: int, emoji: str, who: str, on: bool | None = None) -> dict | None:
+        """Add (on=True), remove (on=False) or toggle (None) `who`'s `emoji` on a message.
+        Reactions are stored on the message as {emoji: [names]}. -> updated message or None."""
+        with self._lock:
+            m = next((m for m in self._messages if m["id"] == msg_id), None)
+            if m is None:
+                return None
+            reactions = m.setdefault("reactions", {})
+            names = reactions.setdefault(emoji, [])
+            add = (who not in names) if on is None else on
+            if add and who not in names:
+                names.append(who)
+            elif not add and who in names:
+                names.remove(who)
+            if not names:
+                del reactions[emoji]
+            if not reactions:
+                del m["reactions"]
+            self._rewrite_jsonl()
+            msg = dict(m)
+        for cb in self._reaction_callbacks:
+            try:
+                cb(msg)
+            except Exception:
+                pass
+        return msg
 
     def delete(self, msg_ids: list[int]) -> list[int]:
         """Delete messages by ID. Returns list of IDs actually deleted."""
@@ -237,6 +286,10 @@ class MessageStore:
                 if m.get("sender") == old_name:
                     m["sender"] = new_name
                     count += 1
+                for names in (m.get("reactions") or {}).values():
+                    if old_name in names:
+                        names[names.index(old_name)] = new_name
+                        count += 1
             if count:
                 self._rewrite_jsonl()
         return count
