@@ -111,6 +111,21 @@ class Compaction(unittest.TestCase):
         self.mgr.in_channel = lambda n, ch: True
         self.assertIn("did not name you", r._turn_note("general"))
 
+    def test_prompt_stays_identical_after_a_restart(self):
+        """Room notes and the window start are saved, so a new Runner builds the same prompt."""
+        self.mgr.specs["q"]["context_messages"] = 30
+        self.store.add("alice", "hello")
+        with mock.patch.object(agent_runner, "call_api_message", self.fake), \
+                mock.patch.object(agent_runner.Runner, "_turn_note", lambda self, ch: "note"):
+            agent_runner.Runner(self.mgr, "q")._api_turn("general")
+            first = list(self.calls[-1][1])
+            self.store.add("q", "ok")
+            self.store.add("alice", "again")
+            reloaded = agent_runner.AgentManager(self.mgr.hub, self.mgr.data_dir)  # as after a restart
+            reloaded._apply = lambda name: None
+            agent_runner.Runner(reloaded, "q")._api_turn("general")
+        self.assertEqual(self.calls[-1][1][:len(first)], first)
+
     def test_old_tool_output_is_trimmed_past_the_budget(self):
         msgs = [{"role": "tool", "content": "x" * 1000} for _ in range(5)]
         agent_runner._trim_tool_output(msgs, budget=3000, keep=2)

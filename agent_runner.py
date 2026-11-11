@@ -777,7 +777,7 @@ class Runner:
                   and m.get("thread") is None]  # thread replies stay out of the channel context
         if not recent:
             return []
-        anchors = self.__dict__.setdefault("_anchors", {})
+        anchors = self._cache_state("anchors")  # saved: a restart keeps the same window start
         first = anchors.get(channel)
         ids = [m["id"] for m in recent]
         if first not in ids or len(ids) - ids.index(first) > 2 * n:
@@ -802,8 +802,9 @@ class Runner:
 
         # Room notes stay where they were said: moving one to the end each turn changed the prompt
         # before the engine's cache point, so every turn re-read the whole prompt (~6 s on the B60).
-        notes = self.__dict__.setdefault("_notes", {}).setdefault(f"{channel}:{self.thread}", {})
-        ids = {m["id"] for m in history}
+        # Saved in the state file (keys are message ids as strings), so a restart keeps the prompt identical.
+        notes = self._cache_state("notes").setdefault(f"{channel}:{self.thread}", {})
+        ids = {str(m["id"]) for m in history}
         for k in [k for k in notes if k not in ids]:
             del notes[k]
 
@@ -830,20 +831,22 @@ class Runner:
                     msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
                 if m["id"] == stop_at:
                     msgs.append({"role": "user", "content": STOP_NOTE})
-                if m["id"] in notes and m is not history[-1]:
-                    msgs.append({"role": "user", "content": notes[m["id"]]})
+                if str(m["id"]) in notes and m is not history[-1]:
+                    msgs.append({"role": "user", "content": notes[str(m["id"])]})
             # Always the same first line (a fixed prompt start caches; Anthropic also needs a user turn first)
             mem = self.memory(channel).get("text")
             msgs.insert(0, {"role": "user", "content": f"(Earlier conversation, from your memory notes:)\n{mem}"
                             if mem else "(earlier conversation omitted)"})
             note = self._turn_note(channel)
             if note and history:
-                notes[history[-1]["id"]] = f"(Room note, not a chat message)\n{note}"
-                msgs.append({"role": "user", "content": notes[history[-1]["id"]]})
+                notes[str(history[-1]["id"])] = f"(Room note, not a chat message)\n{note}"
+                msgs.append({"role": "user", "content": notes[str(history[-1]["id"])]})
             return msgs
 
         older = getattr(self, "_dropped", []) if self.thread is None else []
         msgs = build(with_images=bool(inline))
+        if hasattr(self.m, "save_state"):
+            self.m.save_state()  # window start and room notes survive a restart
         if channel in self.resuming:
             msgs.append({"role": "user", "content": RESUME_NOTE})
         try:
@@ -877,6 +880,14 @@ class Runner:
                              "sid": sid, "text": text})
             asyncio.run_coroutine_threadsafe(hub._broadcast(ev), loop)
         return push
+
+    def _cache_state(self, key: str) -> dict:
+        """Per-agent prompt-cache bookkeeping kept in the state file (window starts, room notes)."""
+        state = getattr(self.m, "state", None)
+        if state is None:  # test doubles without a state file
+            return self.__dict__.setdefault("_" + key, {})
+        with self.m.lock:
+            return state.setdefault(self.name, {}).setdefault(key, {})
 
     def memory(self, channel: str) -> dict:
         """{"upto": last folded message id, "text": notes} for this agent in this channel."""
@@ -923,7 +934,8 @@ class Runner:
         folded = self._compact(channel, older)
         if not folded and older[-1]["id"] > self.memory(channel).get("upto", -1):
             return f"@{self.name}: compaction failed (see the server log)."
-        self._anchors[channel] = window[-keep]["id"] if len(window) >= keep else window[0]["id"]
+        self._cache_state("anchors")[channel] = window[-keep]["id"] if len(window) >= keep else window[0]["id"]
+        self.m.save_state()
         return f"@{self.name} folded {folded} messages of #{channel} into its memory."
 
     def forget(self, channel: str) -> str:
