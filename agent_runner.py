@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 KINDS = ("api", "claude", "agy")
 PERMISSIONS = ("read", "edit", "full")
 NO_REPLY = "(no reply)"
+ACT_LIVE = 4000    # chars per live activity field
+ACT_KEEP = 60      # steps saved with a reply (metadata.activity)
+ACT_SAVED = {"text": 1500, "input": 400, "out": 800}
 CLI_TIMEOUT = 30 * 60
 API_TIMEOUT = 600          # local reasoning models can think for minutes; per-agent "timeout" overrides
 
@@ -119,11 +122,13 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
 _NO_STREAM: set = set()  # agents whose provider refused streaming
 
 
-def _post_stream(url: str, payload: dict, headers: dict, timeout: int, on_text) -> tuple[dict, dict]:
-    """Streamed chat completion -> (assistant message, usage). on_text(text so far) runs per delta."""
+def _post_stream(url: str, payload: dict, headers: dict, timeout: int, on_text,
+                 on_reason=None) -> tuple[dict, dict]:
+    """Streamed chat completion -> (assistant message, usage). on_text(text so far) runs per delta,
+    on_reason(reasoning so far) per reasoning delta (reasoning_content / reasoning fields)."""
     req = urllib.request.Request(url, method="POST", data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json", "Accept": "text/event-stream", **headers})
-    text, calls, usage = "", {}, {}
+    text, calls, usage, reason = "", {}, {}, ""
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -144,6 +149,10 @@ def _post_stream(url: str, payload: dict, headers: dict, timeout: int, on_text) 
             usage = chunk.get("usage") or usage
             for ch in chunk.get("choices") or []:
                 d = ch.get("delta") or {}
+                r = d.get("reasoning_content") or d.get("reasoning")
+                if on_reason and isinstance(r, str) and r:
+                    reason += r
+                    on_reason(reason)
                 if d.get("content"):
                     text += d["content"]
                     on_text(text)
@@ -303,7 +312,8 @@ def _trim_tool_output(msgs: list[dict], budget: int = TOOL_BUDGET, keep: int = 3
 
 
 def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None,
-                     tool_choice: str | None = None, on_text=None, effort: str | None = None) -> dict:
+                     tool_choice: str | None = None, on_text=None, effort: str | None = None,
+                     on_reason=None) -> dict:
     """One chat call -> the assistant message ({"content", "tool_calls"?}).
     Tools are passed for OpenAI-compatible providers only."""
     base = spec.get("base_url", "").rstrip("/")
@@ -343,13 +353,13 @@ def call_api_message(spec: dict, system: str, messages: list[dict], tools: list 
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
         try:
-            msg, u = _post_stream(f"{base}/chat/completions", payload, auth, _timeout(spec), on_text)
+            msg, u = _post_stream(f"{base}/chat/completions", payload, auth, _timeout(spec), on_text, on_reason)
         except urllib.error.HTTPError as exc:
             if exc.code not in (400, 404, 422):
                 raise
             log.info("%s: streaming refused (%s); not streaming for this agent", spec.get("name"), exc.code)
             _NO_STREAM.add(spec.get("name"))  # in memory only: retried after a restart
-            return call_api_message(spec, system, messages, tools, tool_choice, None, effort)
+            return call_api_message(spec, system, messages, tools, tool_choice, None, effort, on_reason)
         det = u.get("prompt_tokens_details") or {}
         _record(spec, time.monotonic() - t0, u.get("prompt_tokens") or 0, det.get("cached_tokens") or 0,
                 det.get("cache_write_tokens") or 0, u.get("completion_tokens") or 0, u.get("cost"))
@@ -359,7 +369,11 @@ def call_api_message(spec: dict, system: str, messages: list[dict], tools: list 
     det = u.get("prompt_tokens_details") or {}
     _record(spec, time.monotonic() - t0, u.get("prompt_tokens") or 0, det.get("cached_tokens") or 0,
             det.get("cache_write_tokens") or 0, u.get("completion_tokens") or 0, u.get("cost"))
-    return data["choices"][0]["message"]
+    msg = data["choices"][0]["message"]
+    r = msg.get("reasoning_content") or msg.get("reasoning")
+    if on_reason and isinstance(r, str) and r:
+        on_reason(r)
+    return msg
 
 
 def list_models(base_url: str, api_key: str, api_format: str) -> list[str]:
@@ -377,7 +391,8 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str,
     kind, perm = spec["kind"], spec.get("permissions", "read")
     exe = _which(spec.get("command") or kind) or kind
     if kind == "claude":
-        cmd = [exe, "-p", prompt, "--output-format", "json", "--append-system-prompt", system]
+        # stream-json: one event per line (thinking, tool calls, results) for the live activity view
+        cmd = [exe, "-p", prompt, "--output-format", "stream-json", "--verbose", "--append-system-prompt", system]
         if protect:  # AgentHub's data dir holds secrets and keys: keep file tools out of it
             cmd += ["--disallowedTools", f"Read({protect}/**)", f"Edit({protect}/**)", f"Write({protect}/**)"]
         if session:
@@ -430,6 +445,13 @@ def parse_cli_output(out: str) -> tuple[str, str | None]:
     sess = next((data[k] for k in ("session_id", "conversation_id", "conversationId", "sessionId")
                  if isinstance(data.get(k), str)), None)
     return text.strip(), sess
+
+
+def _act_saved(items: list[dict], secs: float) -> dict:
+    """The steps kept with a posted reply: trimmed so the chat log stays small."""
+    steps = [{k: (v[:ACT_SAVED.get(k, 200)] if isinstance(v, str) else v) for k, v in it.items()}
+             for it in items[-ACT_KEEP:]]
+    return {"secs": round(secs, 1), "steps": steps, "dropped": max(0, len(items) - ACT_KEEP)}
 
 
 class Runner:
@@ -695,7 +717,7 @@ class Runner:
         hub = self.m.hub
         self.thread = thread  # read by _api_turn/_cli_turn/_addressed; the reply goes back there
         self.channel = channel  # read by halt_turn
-        self.stream_id = uuid.uuid4().hex[:12]  # ties streamed text to the final message (voice)
+        self._act_reset()
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
@@ -707,36 +729,7 @@ class Runner:
             if self.halt.is_set():
                 log.info("%s was stopped in #%s; reply dropped", self.name, channel)
                 return
-            reply = (reply or "").strip()
-            for mid, emoji in REACT_RE.findall(reply):
-                self._react(int(mid), emoji)
-            reply = REACT_RE.sub("", reply).strip()
-            found = PERSONA_RE.findall(reply)
-            if found:
-                self.m.set_persona(self.name, found[-1].strip())
-                reply = PERSONA_RE.sub("", reply).strip()
-                hub.store.add("system", f"{self.name} updated its persona.", msg_type="system",
-                              channel=channel)
-            attachments, problems = self._attachments(ATTACH_RE.findall(reply))
-            reply = ATTACH_RE.sub("", reply).strip()
-            problems += self._artifact_updates(reply)
-            reply = ARTIFACT_UPDATE_RE.sub("", reply).strip()
-            if problems:
-                reply = (reply + "\n\n" + "\n".join(problems)).strip()
-            renames = RENAME_RE.findall(reply)
-            reply = RENAME_RE.sub("", reply).strip()
-            for prefix in (f"{self.name}: ", f"{self.name}:"):
-                if reply.startswith(prefix):
-                    reply = reply[len(prefix):].strip()
-            self.last_ok = time.time()
-            if (reply and reply != NO_REPLY) or attachments:
-                hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
-                              attachments=attachments, thread=thread, metadata={"stream": self.stream_id})
-            else:
-                log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
-            if renames:  # after posting, so the reply is re-attributed with the rest
-                note = self.m.rename(self.name, renames[-1].strip())
-                hub.store.add("system", note, msg_type="system", channel=channel)
+            self._deliver(channel, reply)
         except Exception as exc:
             if self.halt.is_set():
                 return  # killed by /stop: the stop notice says it all
@@ -748,11 +741,87 @@ class Runner:
             self.last_error = {"at": time.time(), "channel": channel, "why": why}
             hub.store.add("system", f"{self.name} failed: {why}", msg_type="system", channel=channel)
         finally:
+            self._act_done(channel)
             self.working = False
             self.tools = None
             if not self.stop.is_set():  # a shutdown mid-turn keeps the mark so it resumes
                 self.m.set_inflight(self.name, channel, False)
             self.resuming.discard(channel)
+
+    def _deliver(self, channel: str, reply: str | None):
+        """Post one reply: reactions, persona, attachments, artifacts and renames are applied first.
+        The steps recorded since the last reply ride along in metadata.activity."""
+        hub, thread = self.m.hub, self.thread
+        reply = (reply or "").strip()
+        for mid, emoji in REACT_RE.findall(reply):
+            self._react(int(mid), emoji)
+        reply = REACT_RE.sub("", reply).strip()
+        found = PERSONA_RE.findall(reply)
+        if found:
+            self.m.set_persona(self.name, found[-1].strip())
+            reply = PERSONA_RE.sub("", reply).strip()
+            hub.store.add("system", f"{self.name} updated its persona.", msg_type="system",
+                          channel=channel)
+        attachments, problems = self._attachments(ATTACH_RE.findall(reply))
+        reply = ATTACH_RE.sub("", reply).strip()
+        problems += self._artifact_updates(reply)
+        reply = ARTIFACT_UPDATE_RE.sub("", reply).strip()
+        if problems:
+            reply = (reply + "\n\n" + "\n".join(problems)).strip()
+        renames = RENAME_RE.findall(reply)
+        reply = RENAME_RE.sub("", reply).strip()
+        for prefix in (f"{self.name}: ", f"{self.name}:"):
+            if reply.startswith(prefix):
+                reply = reply[len(prefix):].strip()
+        self.last_ok = time.time()
+        if (reply and reply != NO_REPLY) or attachments:
+            meta = {"stream": self.stream_id}
+            if self.activity:
+                meta["activity"] = _act_saved(self.activity, time.monotonic() - self._act_t0)
+            hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
+                          attachments=attachments, thread=thread, metadata=meta)
+        else:
+            log.info("%s stayed quiet in #%s (%s)", self.name, channel, "no reply" if reply else "empty answer")
+        if renames:  # after posting, so the reply is re-attributed with the rest
+            note = self.m.rename(self.name, renames[-1].strip())
+            hub.store.add("system", note, msg_type="system", channel=channel)
+
+    # ---- live activity: status, thinking and tool steps shown in the chat while a turn runs
+
+    def _act_reset(self):
+        self.stream_id = uuid.uuid4().hex[:12]  # ties streamed text and steps to the final message
+        self.activity: list[dict] = []
+        self._act_t0 = time.monotonic()
+        self._act_last = 0.0
+
+    def _act_send(self, channel: str, ev: dict):
+        hub = self.m.hub
+        loop = getattr(hub, "_event_loop", None)
+        if not loop or not hasattr(hub, "_broadcast"):
+            return
+        ev = {"type": "agent_activity", "agent": self.name, "channel": channel, "thread": self.thread,
+              "sid": self.stream_id, **ev}
+        asyncio.run_coroutine_threadsafe(hub._broadcast(json.dumps(ev)), loop)
+
+    def _act(self, channel: str, item: dict, index: int | None = None, force: bool = True) -> int:
+        """Add a step (or replace step `index`) and push it to browsers. -> its index.
+        force=False rate-limits pushes (streamed thinking) to one per 0.3 s."""
+        if "activity" not in self.__dict__:
+            self._act_reset()
+        item = {k: (v[:ACT_LIVE] if isinstance(v, str) else v) for k, v in item.items()}
+        if index is None or index >= len(self.activity):
+            self.activity.append(item)
+            index = len(self.activity) - 1
+        else:
+            self.activity[index] = item
+        now = time.monotonic()
+        if force or now - self._act_last >= 0.3:
+            self._act_last = now
+            self._act_send(channel, {"i": index, "item": item})
+        return index
+
+    def _act_done(self, channel: str):
+        self._act_send(channel, {"done": True})
 
     def _react(self, mid: int, emoji: str) -> str:
         """Add this agent's reaction to message #mid (never wakes anyone)."""
@@ -973,10 +1042,16 @@ class Runner:
             steps = MAX_TOOL_STEPS
         for step in range(steps):
             _trim_tool_output(msgs)
+            think = {"i": None, "text": ""}
+
+            def on_reason(text: str, think=think):
+                think["text"] = text
+                think["i"] = self._act(channel, {"k": "thinking", "text": text}, think["i"], force=False)
             try:  # "require_tool": the first step must call a tool (read before answering)
                 reply = call_api_message(spec, system, msgs, tools,
                                          "required" if step == 0 and spec.get("require_tool") else None,
-                                         on_text=self._streamer(channel), effort=effort_for(channel))
+                                         on_text=self._streamer(channel), effort=effort_for(channel),
+                                         on_reason=on_reason)
             except urllib.error.HTTPError as exc:
                 # A 400 with inline images: let the caller retry without images first
                 if images_inline or not tools or exc.code not in (400, 422):
@@ -984,6 +1059,8 @@ class Runner:
                 log.info("%s: provider rejected tools (%s); answering without them", self.name, exc.code)
                 tools = None
                 continue
+            if think["i"] is not None:  # the last rate-limited thinking update
+                self._act(channel, {"k": "thinking", "text": think["text"]}, think["i"])
             if self.halt.is_set():
                 return ""  # /stop arrived while the model was answering
             calls = reply.get("tool_calls") or []
@@ -1004,6 +1081,9 @@ class Runner:
             # keep reasoning_details: Gemini (via OpenRouter) needs its thought signatures back
             msgs.append({k: v for k, v in reply.items() if k in ("content", "tool_calls", "reasoning_details")}
                         | {"role": "assistant", "content": text, "tool_calls": calls})
+            shown = re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+            if shown:
+                self._act(channel, {"k": "text", "text": shown})
             for c in calls:
                 fn = c.get("function", {})
                 try:
@@ -1012,6 +1092,8 @@ class Runner:
                     args = {}
                 log.info("%s tool %s %s", self.name, fn.get("name"), str(args)[:120])
                 args = args if isinstance(args, dict) else {}
+                step_i = self._act(channel, {"k": "tool", "name": fn.get("name") or "?",
+                                             "input": json.dumps(args, ensure_ascii=False)})
                 if fn.get("name") in mcp_names:
                     srv, tool = mcp_names[fn["name"]]
                     try:
@@ -1024,6 +1106,9 @@ class Runner:
                         out = f"error: MCP server {srv['name']} failed: {str(exc)[:300]}"
                 else:
                     out = runner.run(fn.get("name", ""), args)
+                self._act(channel, {"k": "tool", "name": fn.get("name") or "?",
+                                    "input": json.dumps(args, ensure_ascii=False), "out": str(out),
+                                    "err": str(out).startswith("error")}, step_i)
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": out})
         # Out of steps: one last call without tools so the agent reports where it got to
         log.info("%s used all %d tool steps; asking for a summary", self.name, steps)
@@ -1072,8 +1157,13 @@ class Runner:
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      stdin=subprocess.DEVNULL, text=True, env=env,
                                      start_new_session=True)  # own process group: /stop kills its children too
+        streamed = None
         try:
-            stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
+            if spec["kind"] == "claude":
+                streamed, stderr = self._claude_stream(channel)
+                stdout = ""
+            else:
+                stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             stdout, stderr = self.proc.communicate()
@@ -1086,8 +1176,8 @@ class Runner:
                 state["cursors"][channel] = max(m["id"] for m in new)
                 self.m.save_state()
             return ""
-        text, new_session = parse_cli_output(stdout)
-        if code != 0 and not text:
+        text, new_session = streamed if streamed else parse_cli_output(stdout)
+        if code != 0 and not text and not (streamed and self.__dict__.get("_cli_posted")):
             raise RuntimeError((stderr or stdout or f"exit {code}").strip()[-300:])
         if thread is None:
             state["cursors"][channel] = max(m["id"] for m in new)
@@ -1095,6 +1185,77 @@ class Runner:
             state["sessions"][channel] = new_session
         self.m.save_state()
         return text
+
+
+    def _claude_stream(self, channel: str) -> tuple[tuple[str, str | None], str]:
+        """Read Claude Code's stream-json events as they come: steps go to the live activity view,
+        and a reply that arrives while the process keeps running (it waits for background tasks)
+        is posted at once. -> ((final reply not yet posted, session id), stderr)."""
+        proc = self.proc
+        err: list[str] = []
+        threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()  # never blocks stdout
+        timer = threading.Timer(CLI_TIMEOUT, proc.kill)
+        timer.start()
+        tools: dict[str, int] = {}
+        session, results, posted = None, [], []
+        self._cli_posted = False
+        try:
+            for line in proc.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                session = ev.get("session_id") or session
+                sub = ev.get("parent_tool_use_id") is not None  # a step inside a subagent
+                content = (ev.get("message") or {}).get("content")
+                if ev.get("type") == "assistant" and isinstance(content, list):
+                    for b in content:
+                        if b.get("type") == "thinking" and (b.get("thinking") or "").strip():
+                            self._act(channel, {"k": "thinking", "text": b["thinking"], "sub": sub})
+                        elif b.get("type") == "text" and b.get("text", "").strip() and not sub:
+                            self._act(channel, {"k": "text", "text": b["text"].strip()})
+                        elif b.get("type") == "tool_use":
+                            tools[b.get("id", "")] = self._act(channel, {
+                                "k": "tool", "name": b.get("name") or "?", "sub": sub,
+                                "input": json.dumps(b.get("input") or {}, ensure_ascii=False)})
+                elif ev.get("type") == "user" and isinstance(content, list):
+                    for b in content:
+                        i = tools.get(b.get("tool_use_id", "")) if b.get("type") == "tool_result" else None
+                        if i is None or i >= len(self.activity):
+                            continue
+                        out = b.get("content")
+                        if isinstance(out, list):
+                            out = "\n".join(x.get("text", "") for x in out if isinstance(x, dict))
+                        self._act(channel, {**self.activity[i], "out": str(out or ""),
+                                            "err": bool(b.get("is_error"))}, i)
+                elif ev.get("type") == "result":
+                    text = (ev.get("result") or "").strip() if isinstance(ev.get("result"), str) else ""
+                    last = self.activity[-1] if self.activity else None
+                    if last and last.get("k") == "text" and last.get("text") == text:
+                        self.activity.pop()  # the reply itself is the message, not a step
+                    results.append(text)
+                    try:
+                        proc.wait(timeout=1.5)
+                    except subprocess.TimeoutExpired:  # still running: background tasks. Post now.
+                        if text and text != NO_REPLY and not self.halt.is_set() and not self.stop.is_set():
+                            self._deliver(channel, text)
+                            posted.append(text)
+                            self._cli_posted = True
+                            self._act_done(channel)
+                            self._act_reset()
+                            self._act(channel, {"k": "status", "text": "Replied; still running background tasks"})
+        finally:
+            timer.cancel()
+            proc.wait()
+        real = [t for t in results if t and t != NO_REPLY]
+        final = results[-1] if results else ""
+        if (not final or final == NO_REPLY) and real and real[-1] not in posted:
+            final = real[-1]  # a background-task wake-up ended on "(no reply)": keep the real answer
+        if final in posted:
+            final = ""
+        return (final, session), "".join(err)
 
 
 class AgentManager:

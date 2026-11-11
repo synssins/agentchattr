@@ -1007,6 +1007,7 @@ function appendMessage(msg, options = {}) {
         if (todoStatus) el.classList.add('msg-todo', `msg-todo-${todoStatus}`);
         if (msg.metadata?.session_output) el.classList.add('session-output');
         window.Control?.decorate(el, msg);  // reactions, thread summary, react/thread toolbar
+        window.Activity?.decorate(el, msg);  // collapsed steps the agent took (metadata.activity)
 
         // Add copy buttons to code blocks
         addCodeCopyButtons(el);
