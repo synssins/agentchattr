@@ -1305,6 +1305,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                       else "No agent is working.", msg_type="system", channel=channel)
                         await broadcast_status()
                         continue
+                    if cmd in ("/compact", "/forget"):
+                        # /compact @name: fold older messages into its memory; /forget @name: clear it
+                        runners = agent_manager.runners if agent_manager else {}
+                        names = [p.lstrip("@").lower() for p in cmd_parts[1:]]
+                        if not names:
+                            note = f"Usage: {cmd} @agent"
+                        elif names[0] not in runners:
+                            note = f"No server-run agent named {names[0]}."
+                        elif cmd == "/compact":
+                            note = await asyncio.to_thread(runners[names[0]].compact_now, channel)
+                        else:
+                            note = await asyncio.to_thread(runners[names[0]].forget, channel)
+                        store.add("system", note, msg_type="system", channel=channel)
+                        continue
                     if cmd == "/continue":
                         router.continue_routing(channel)  # this channel's loop guard, not #general's
                         store.add("system", "Resuming agent conversation...", msg_type="system", channel=channel)

@@ -2411,6 +2411,8 @@ const SLASH_COMMANDS = [
     { cmd: '/summarise', desc: 'Summarize recent messages — tag an agent (e.g. /summarise @claude)', broadcast: false, needsMention: true, hidden: true },
     { cmd: '/continue', desc: 'Resume after loop guard pauses', broadcast: false },
     { cmd: '/stop', desc: 'Stop every working agent, or one: /stop @name', broadcast: false },
+    { cmd: '/compact', desc: 'Fold older messages into an agent\'s memory: /compact @name', broadcast: false },
+    { cmd: '/forget', desc: 'Clear an agent\'s memory of this channel: /forget @name', broadcast: false },
     { cmd: '/spawn', desc: 'New instance of a server agent in this channel: /spawn claudecode [name]', broadcast: false },
     { cmd: '/review', desc: 'Review against a rulebook: /review Story writing @agent <text or path>', broadcast: false },
     { cmd: '/rename', desc: 'Change an agent\'s @handle: /rename agy-2 Marcus', broadcast: false },

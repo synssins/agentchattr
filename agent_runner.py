@@ -114,6 +114,14 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
         raise
 
 
+# Compaction (API agents): messages that leave the context window fold into a rolling memory
+MEMORY_PROMPT = ("You keep the running memory of a group chat for the agent {name}. Merge the earlier "
+                 "memory and the new messages into one updated memory: decisions, facts, open tasks, "
+                 "who asked for what, and names, file paths and message ids worth keeping. Drop small "
+                 "talk. Plain notes, at most 300 words. Reply with the memory only.")
+MEMORY_INPUT = 24000       # chars of new transcript per compaction (the newest are kept)
+MEMORY_MAX = 4000          # chars of memory kept
+TOOL_BUDGET = 40000        # chars of tool output in one turn before older results are trimmed
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -208,6 +216,17 @@ def _mark_last(messages: list[dict]) -> list[dict]:
             continue
         return messages[:i] + [dict(m, content=parts)] + messages[i + 1:]
     return messages
+
+
+def _trim_tool_output(msgs: list[dict], budget: int = TOOL_BUDGET, keep: int = 3):
+    """Long tool loops: once tool output passes the budget, cut all but the newest results short."""
+    tools = [m for m in msgs if m.get("role") == "tool"]
+    if sum(len(m.get("content") or "") for m in tools) <= budget:
+        return
+    for m in tools[:-keep]:
+        c = m.get("content") or ""
+        if len(c) > 400:
+            m["content"] = c[:300] + "\n…[older tool output trimmed to save context; run the tool again if needed]"
 
 
 def call_api_message(spec: dict, system: str, messages: list[dict], tools: list | None = None,
@@ -631,6 +650,7 @@ class Runner:
         if first not in ids or len(ids) - ids.index(first) > 2 * n:
             first = recent[-n]["id"] if len(recent) > n else recent[0]["id"]
             anchors[channel] = first
+        self._dropped = recent[:ids.index(first)]  # left the window: compaction folds these into memory
         return recent[ids.index(first):]
 
     def _api_turn(self, channel: str) -> str:
@@ -666,12 +686,15 @@ class Runner:
                             pass
                 msgs.append({"role": "user", "content": [{"type": "text", "text": text}] + parts if parts else text})
             # Always the same first line (a fixed prompt start caches; Anthropic also needs a user turn first)
-            msgs.insert(0, {"role": "user", "content": "(earlier conversation omitted)"})
+            mem = self.memory(channel).get("text")
+            msgs.insert(0, {"role": "user", "content": f"(Earlier conversation, from your memory notes:)\n{mem}"
+                            if mem else "(earlier conversation omitted)"})
             note = self._turn_note(channel)
             if note:
                 msgs.append({"role": "user", "content": f"(Room note, not a chat message)\n{note}"})
             return msgs
 
+        older = getattr(self, "_dropped", []) if self.thread is None else []
         msgs = build(with_images=bool(inline))
         if channel in self.resuming:
             msgs.append({"role": "user", "content": RESUME_NOTE})
@@ -682,6 +705,63 @@ class Runner:
                 raise
             log.info("%s: model rejected images (%s); retrying text-only", self.name, exc.code)
             return self._tool_loop(channel, build(with_images=False))
+        finally:  # after the reply, not before: compaction never delays an answer
+            if older and not self.halt.is_set() and not self.spec.get("no_compact"):
+                threading.Thread(target=self._compact, args=(channel, older), daemon=True).start()
+
+    def memory(self, channel: str) -> dict:
+        """{"upto": last folded message id, "text": notes} for this agent in this channel."""
+        return ((getattr(self.m, "state", None) or {}).get(self.name, {}).get("memory") or {}).get(channel) or {}
+
+    def _compact(self, channel: str, older: list[dict]) -> int:
+        """Fold messages that left the context window into the rolling memory. -> messages folded."""
+        mem = self.memory(channel)
+        new = [m for m in older if m["id"] > mem.get("upto", -1)]
+        if not new or not self.__dict__.setdefault("_compact_lock", threading.Lock()).acquire(blocking=False):
+            return 0
+        try:
+            transcript = "\n".join(f"#{m['id']} {m['sender']}: {m.get('text', '')}" for m in new)[-MEMORY_INPUT:]
+            prompt = f"Earlier memory:\n{mem.get('text') or '(none)'}\n\nNew messages:\n{transcript}"
+            try:
+                text = (call_api_message(self.spec, MEMORY_PROMPT.format(name=self.name),
+                                         [{"role": "user", "content": prompt}]).get("content") or "")
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+            except Exception as exc:  # memory is best effort; the messages stay in the log
+                log.warning("%s: compaction failed: %s", self.name, exc)
+                return 0
+            if not text:
+                return 0
+            with self.m.lock:
+                self.m.state.setdefault(self.name, {}).setdefault("memory", {})[channel] = {
+                    "upto": new[-1]["id"], "text": text[:MEMORY_MAX]}
+            self.m.save_state()
+            log.info("%s: folded %d messages of #%s into memory", self.name, len(new), channel)
+            return len(new)
+        finally:
+            self._compact_lock.release()
+
+    def compact_now(self, channel: str, keep: int = 4) -> str:
+        """/compact @agent: fold everything but the last few messages into memory now."""
+        if self.spec.get("kind") != "api":
+            return f"@{self.name} runs its own session and compacts its own context."
+        if self.working:
+            return f"@{self.name} is busy; try again when it has answered."
+        self.thread = None
+        window = self._window(channel, max(1, int(self.spec.get("context_messages") or 30)))
+        older = self._dropped + window[:-keep]
+        if not older:
+            return f"@{self.name} has nothing to compact in #{channel}."
+        folded = self._compact(channel, older)
+        if not folded and older[-1]["id"] > self.memory(channel).get("upto", -1):
+            return f"@{self.name}: compaction failed (see the server log)."
+        self._anchors[channel] = window[-keep]["id"] if len(window) >= keep else window[0]["id"]
+        return f"@{self.name} folded {folded} messages of #{channel} into its memory."
+
+    def forget(self, channel: str) -> str:
+        with self.m.lock:
+            (self.m.state.get(self.name, {}).get("memory") or {}).pop(channel, None)
+        self.m.save_state()
+        return f"@{self.name} cleared its memory of #{channel}."
 
     def _tool_loop(self, channel: str, msgs: list[dict], images_inline: bool = False) -> str:
         """Let an API agent call tools (agent_tools) until it answers in text."""
@@ -711,6 +791,7 @@ class Runner:
         except (TypeError, ValueError):
             steps = MAX_TOOL_STEPS
         for step in range(steps):
+            _trim_tool_output(msgs)
             try:  # "require_tool": the first step must call a tool (read before answering)
                 reply = call_api_message(spec, system, msgs, tools,
                                          "required" if step == 0 and spec.get("require_tool") else None)
