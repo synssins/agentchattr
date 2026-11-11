@@ -21,6 +21,20 @@ Owner decisions in order of delivery. Each phase ships live when its tests pass.
 ## 4. Images
 - ComfyUI image generation through the Nexus comfy_mcp server, registered in Settings > MCP servers and granted per agent.
 - Agent-posted images show as thumbnails; click for a lightbox (full size, previous/next, download, prompt details).
+- Workflow catalog: each workflow tagged by content (NSFW, NSFW-capable, SFW-leaning), model and best use, so agents pick the right one.
+- Masks: paint a mask in the lightbox, or have an agent make one from a description (Florence-2 + SAM2) for inpainting.
+- Per-server MCP tool timeout for long image runs.
+
+## 4b. Agent memory and fixes
+- Rulebooks on request: agents open one with the rulebook tool only when asked; fine-grained access is an advanced option.
+- Context compaction for API agents: messages that leave the context window are folded into a rolling summary per agent and channel; long tool loops compact older tool results; `/compact @agent` forces it.
+- Painted masks keep the original pixels under the mask (they turn black today, which hurts partial-denoise inpaints).
+- A stopped API agent drops the cancelled request from its context.
+- Video and audio outputs play inline in chat.
+- Thread composer gets attachments and @-autocomplete.
+- IRC shows artifacts as a title and link, not a bare token.
+- Timed-out ComfyUI jobs are cancelled instead of left running.
+- Agent health panel: model, endpoint up/down, last error and queue per agent.
 
 ## 5. Voice output
 - Pluggable TTS providers (OpenAI-style /v1/audio/speech: Chatterbox :4123 with cloning, Kokoro :8880, external APIs).
@@ -44,7 +58,7 @@ Owner decisions in order of delivery. Each phase ships live when its tests pass.
 - Channel invites for other people.
 - Multiple human users (accounts, identities, per-user permissions).
 
-## 9. Approval cards
+## 9. Approval cards (on hold)
 - Risky actions by full-access agents ask in chat first, with "allow for this session" so prompts don't repeat.
 
 Not planned: unique notification sounds per agent in General settings (moved to the agent page instead).
