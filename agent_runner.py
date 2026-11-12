@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import os
+import queue
 import shutil
 import subprocess
 import threading
@@ -42,7 +43,8 @@ NO_REPLY = "(no reply)"
 ACT_LIVE = 4000    # chars per live activity field
 ACT_KEEP = 60      # steps saved with a reply (metadata.activity)
 ACT_SAVED = {"text": 1500, "input": 400, "out": 800}
-CLI_TIMEOUT = 30 * 60
+CLI_TIMEOUT = 30 * 60      # Claude Code: killed after this long with no output (agy: in all)
+CLI_MAX = 8 * 3600         # Claude Code: hard cap for one turn, background work included
 API_TIMEOUT = 600          # local reasoning models can think for minutes; per-agent "timeout" overrides
 
 PERSONA_RE = re.compile(r"\[persona\](.*?)\[/persona\]", re.S | re.I)
@@ -1179,7 +1181,14 @@ class Runner:
         streamed = None
         try:
             if spec["kind"] == "claude":
-                streamed, stderr = self._claude_stream(channel)
+                def on_posted(sid: str | None):
+                    """A reply is out: a kill after this must not hand the same messages over again."""
+                    if thread is None:
+                        state["cursors"][channel] = max(m["id"] for m in new)
+                    if sid:
+                        state["sessions"][channel] = sid
+                    self.m.save_state()
+                streamed, stderr = self._claude_stream(channel, on_posted)
                 stdout = ""
             else:
                 stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
@@ -1206,68 +1215,115 @@ class Runner:
         return text
 
 
-    def _claude_stream(self, channel: str) -> tuple[tuple[str, str | None], str]:
-        """Read Claude Code's stream-json events as they come: steps go to the live activity view,
-        and a reply that arrives while the process keeps running (it waits for background tasks)
-        is posted at once. -> ((final reply not yet posted, session id), stderr)."""
+    def _claude_stream(self, channel: str, on_posted=None) -> tuple[tuple[str, str | None], str]:
+        """Read Claude Code's stream-json events as they come. Steps go to the live activity view.
+        Each reply is posted as soon as it is complete, even while the process keeps running:
+        with background subagents Claude Code holds every "result" event until it exits, so a
+        reply counts as complete when its message ends the turn (stop_reason end_turn in the
+        session transcript) or a new message starts. The process is killed after CLI_TIMEOUT
+        without output, or CLI_MAX in all. -> ((final reply not yet posted, session id), stderr)."""
         proc = self.proc
         err: list[str] = []
         threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True).start()  # never blocks stdout
-        timer = threading.Timer(CLI_TIMEOUT, proc.kill)
-        timer.start()
+        lines: queue.Queue = queue.Queue()
+
+        def pump():
+            for line in proc.stdout:
+                lines.put(line)
+            lines.put(None)
+        threading.Thread(target=pump, daemon=True).start()
+        t0 = last = time.monotonic()
         tools: dict[str, int] = {}
         session, results, posted = None, [], []
+        pending = None  # (message id, text): a reply that may still continue with a tool call
         self._cli_posted = False
-        try:
-            for line in proc.stdout:
+
+        def post(text: str):
+            if not text or text == NO_REPLY or text in posted or self.halt.is_set() or self.stop.is_set():
+                return
+            last_step = self.activity[-1] if self.activity else None
+            if last_step and last_step.get("k") == "text" and last_step.get("text") == text:
+                self.activity.pop()  # the reply itself is the message, not a step
+            self._deliver(channel, text)
+            posted.append(text)
+            self._cli_posted = True
+            if on_posted:
+                on_posted(session)
+            self._act_done(channel)
+            self._act_reset()
+            self._act(channel, {"k": "status", "text": "Replied; still working in the background"})
+
+        while True:
+            try:
+                line = lines.get(timeout=1)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                break
+            now = time.monotonic()
+            if line:
+                last = now
+            elif (now - last > CLI_TIMEOUT or now - t0 > CLI_MAX) and proc.poll() is None:
+                log.warning("%s: no output for %d s (or over %d s in all); killing the CLI",
+                            self.name, CLI_TIMEOUT, CLI_MAX)
+                proc.kill()
+            if pending and session and _turn_ended(session, pending[0]):
+                post(pending[1])
+                pending = None
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            session = ev.get("session_id") or session
+            sub = ev.get("parent_tool_use_id") is not None  # a step inside a subagent
+            msg = ev.get("message") or {}
+            content = msg.get("content")
+            if ev.get("type") == "assistant" and isinstance(content, list):
+                mid = msg.get("id") or ""
+                if pending and not sub and mid != pending[0]:
+                    post(pending[1])  # a new message began: the last one was a finished reply
+                    pending = None
+                for b in content:
+                    if b.get("type") == "thinking" and (b.get("thinking") or "").strip():
+                        self._act(channel, {"k": "thinking", "text": b["thinking"], "sub": sub})
+                    elif b.get("type") == "text" and b.get("text", "").strip() and not sub:
+                        self._act(channel, {"k": "text", "text": b["text"].strip()})
+                        pending = (mid, b["text"].strip())
+                    elif b.get("type") == "tool_use":
+                        if not sub and pending and pending[0] == mid:
+                            pending = None  # text before a tool call is a progress note
+                        tools[b.get("id", "")] = self._act(channel, {
+                            "k": "tool", "name": b.get("name") or "?", "sub": sub,
+                            "input": json.dumps(b.get("input") or {}, ensure_ascii=False)})
+            elif ev.get("type") == "user" and isinstance(content, list):
+                for b in content:
+                    i = tools.get(b.get("tool_use_id", "")) if b.get("type") == "tool_result" else None
+                    if i is None or i >= len(self.activity):
+                        continue
+                    out = b.get("content")
+                    if isinstance(out, list):
+                        out = "\n".join(x.get("text", "") for x in out if isinstance(x, dict))
+                    self._act(channel, {**self.activity[i], "out": str(out or ""),
+                                        "err": bool(b.get("is_error"))}, i)
+            elif ev.get("type") == "result":
+                text = (ev.get("result") or "").strip() if isinstance(ev.get("result"), str) else ""
+                last_step = self.activity[-1] if self.activity else None
+                if last_step and last_step.get("k") == "text" and last_step.get("text") == text:
+                    self.activity.pop()
+                if pending and pending[1] == text:
+                    pending = None
+                results.append(text)
                 try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                session = ev.get("session_id") or session
-                sub = ev.get("parent_tool_use_id") is not None  # a step inside a subagent
-                content = (ev.get("message") or {}).get("content")
-                if ev.get("type") == "assistant" and isinstance(content, list):
-                    for b in content:
-                        if b.get("type") == "thinking" and (b.get("thinking") or "").strip():
-                            self._act(channel, {"k": "thinking", "text": b["thinking"], "sub": sub})
-                        elif b.get("type") == "text" and b.get("text", "").strip() and not sub:
-                            self._act(channel, {"k": "text", "text": b["text"].strip()})
-                        elif b.get("type") == "tool_use":
-                            tools[b.get("id", "")] = self._act(channel, {
-                                "k": "tool", "name": b.get("name") or "?", "sub": sub,
-                                "input": json.dumps(b.get("input") or {}, ensure_ascii=False)})
-                elif ev.get("type") == "user" and isinstance(content, list):
-                    for b in content:
-                        i = tools.get(b.get("tool_use_id", "")) if b.get("type") == "tool_result" else None
-                        if i is None or i >= len(self.activity):
-                            continue
-                        out = b.get("content")
-                        if isinstance(out, list):
-                            out = "\n".join(x.get("text", "") for x in out if isinstance(x, dict))
-                        self._act(channel, {**self.activity[i], "out": str(out or ""),
-                                            "err": bool(b.get("is_error"))}, i)
-                elif ev.get("type") == "result":
-                    text = (ev.get("result") or "").strip() if isinstance(ev.get("result"), str) else ""
-                    last = self.activity[-1] if self.activity else None
-                    if last and last.get("k") == "text" and last.get("text") == text:
-                        self.activity.pop()  # the reply itself is the message, not a step
-                    results.append(text)
-                    try:
-                        proc.wait(timeout=1.5)
-                    except subprocess.TimeoutExpired:  # still running: background tasks. Post now.
-                        if text and text != NO_REPLY and not self.halt.is_set() and not self.stop.is_set():
-                            self._deliver(channel, text)
-                            posted.append(text)
-                            self._cli_posted = True
-                            self._act_done(channel)
-                            self._act_reset()
-                            self._act(channel, {"k": "status", "text": "Replied; still running background tasks"})
-        finally:
-            timer.cancel()
-            proc.wait()
+                    proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:  # still running: background tasks. Post now.
+                    post(text)
+        proc.wait()
+        if pending:
+            results.append(pending[1])  # killed or ended before a result event for it
         real = [t for t in results if t and t != NO_REPLY]
         final = results[-1] if results else ""
         if (not final or final == NO_REPLY) and real and real[-1] not in posted:
@@ -1275,6 +1331,21 @@ class Runner:
         if final in posted:
             final = ""
         return (final, session), "".join(err)
+
+
+def _turn_ended(session: str, message_id: str) -> bool:
+    """True when Claude Code's session transcript shows message_id ended its turn (not a tool call)."""
+    if not message_id:
+        return False
+    for f in Path.home().glob(f".claude/projects/*/{session}.jsonl"):
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(max(0, f.stat().st_size - 512 * 1024))
+                tail = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        return any(message_id in ln and '"stop_reason":"end_turn"' in ln for ln in tail.splitlines())
+    return False
 
 
 class AgentManager:

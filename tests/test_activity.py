@@ -7,6 +7,7 @@ import tempfile
 import textwrap
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -64,6 +65,43 @@ class ClaudeStreamTest(unittest.TestCase):
         steps = posted[0]["metadata"]["activity"]["steps"]
         self.assertEqual([s["k"] for s in steps], ["thinking", "tool"])
         self.assertEqual(r.activity[0]["k"], "status")               # a fresh activity for the wait
+
+    def held_proc(self, pause: float):
+        """Claude Code with a background subagent: results are held until the process exits."""
+        first = [{"type": "system", "subtype": "init", "session_id": "s9"},
+                 {"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "Started."}]}},
+                 {"type": "assistant", "parent_tool_use_id": "t1",
+                  "message": {"id": "x", "content": [{"type": "text", "text": "sub work"}]}}]
+        rest = [{"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "Finished."}]}},
+                {"type": "result", "result": "Started.", "session_id": "s9"},
+                {"type": "result", "result": "Finished.", "session_id": "s9"}]
+        script = textwrap.dedent(f"""
+            import json, time
+            for e in {first!r}: print(json.dumps(e), flush=True)
+            time.sleep({pause})
+            for e in {rest!r}: print(json.dumps(e), flush=True)
+        """)
+        return subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+
+    def test_held_results_reply_posted_when_turn_ends_in_transcript(self):
+        r = self.runner()
+        r.proc = self.held_proc(3)
+        seen = []
+        with unittest.mock.patch.object(agent_runner, "_turn_ended", lambda s, m: m == "m1"):
+            (text, _), _ = r._claude_stream("general", on_posted=seen.append)
+        posted = [m["text"] for m in self.store.get_recent(5)]
+        self.assertEqual(posted, ["Started."])     # posted during the pause, before the process ended
+        self.assertEqual(seen, ["s9"])             # cursor/session saved at that point
+        self.assertEqual(text, "Finished.")        # the last reply is left to _turn
+
+    def test_held_results_new_message_marks_previous_reply_done(self):
+        r = self.runner()
+        r.proc = self.held_proc(0)
+        with unittest.mock.patch.object(agent_runner, "_turn_ended", lambda s, m: False):
+            (text, _), _ = r._claude_stream("general")
+        self.assertEqual([m["text"] for m in self.store.get_recent(5)], ["Started."])
+        self.assertEqual(text, "Finished.")
 
 
 if __name__ == "__main__":
