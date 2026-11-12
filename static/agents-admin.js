@@ -264,6 +264,10 @@
         const steps = el('input', { type: 'number', min: '1', max: '200', value: a.max_tool_steps || '', placeholder: '40' });
         const requireTool = el('input', { type: 'checkbox' });
         requireTool.checked = !!a.require_tool;
+        const effort = el('select', { 'aria-label': 'Thinking effort' });
+        for (const [v, t] of [['', 'Channel setting (Think selector)'], ['none', 'Off'], ['low', 'Low'], ['medium', 'Medium'],
+                              ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']]) effort.append(el('option', { value: v, text: t }));
+        effort.value = a.effort || '';
         const compact = el('input', { type: 'checkbox' });
         compact.checked = !a.no_compact;
         // Voice (read-aloud and conversations): provider + voice from Settings > Voice
@@ -332,7 +336,9 @@
             el('div', { class: 'agents-inline agents-inline-top' }, field('Color', color),
                 field('Notification sound', sound, 'Plays for this agent\'s messages, in this browser.')),
             field('Type', kind),
-            apiBox, cliBox, toolsBox,
+            apiBox, cliBox,
+            field('Thinking effort', effort, 'Overrides the Think selector for this agent. Claude Code uses every level except Off; API agents treat Extra high and Max as High; Antigravity ignores it.'),
+            toolsBox,
             field('Role / instructions (from you)', prompt),
             el('div', { class: 'agents-field' }, el('span', { text: 'Voice (read aloud and conversations)' }),
                 el('div', { class: 'agents-inline' }, field('Provider', vProvider), field('Voice', vVoice), field('Speed', vSpeed), vPreview),
@@ -357,6 +363,7 @@
                 cwd: cwd.value.trim(), permissions: perm.value,
                 allowed_commands: allowedCmds.value.split(',').map(x => x.trim()).filter(Boolean),
                 voice_provider: vProvider.value, voice: vVoice.value, voice_speed: Number(vSpeed.value) || null,
+                effort: effort.value || null,
             };
             if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {

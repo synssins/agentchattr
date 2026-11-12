@@ -180,6 +180,8 @@ TOOL_BUDGET = 40000        # chars of tool output in one turn before older resul
 STOP_NOTE = ("(Room note: the owner stopped your turn here. Drop the request you were working on; "
              "don't resume it unless someone asks again.)")
 EFFORTS = ("none", "low", "medium", "high")
+AGENT_EFFORTS = EFFORTS + ("xhigh", "max")  # per agent (spec "effort"); xhigh/max are Claude Code levels
+CLI_EFFORTS = ("low", "medium", "high", "xhigh", "max")  # claude --effort
 _effort_path: Path | None = None
 
 
@@ -189,6 +191,17 @@ def effort_for(channel: str) -> str | None:
         return json.loads(_effort_path.read_text("utf-8")).get(channel) if _effort_path else None
     except (OSError, ValueError):
         return None
+
+
+def effort_level(spec: dict, channel: str) -> str | None:
+    """The agent's own thinking level if set, else the channel's Think selector."""
+    own = spec.get("effort")
+    return own if own in AGENT_EFFORTS else effort_for(channel)
+
+
+def api_effort(level: str | None) -> str | None:
+    """OpenAI-style reasoning_effort stops at high."""
+    return "high" if level in ("xhigh", "max") else level
 
 
 def set_effort(channel: str, effort: str | None):
@@ -387,7 +400,8 @@ def list_models(base_url: str, api_key: str, api_format: str) -> list[str]:
 
 
 def cli_command(spec: dict, prompt: str, session: str | None, system: str,
-                protect: str | None = None, mcp: tuple[str | None, list[str]] = (None, [])) -> list[str]:
+                protect: str | None = None, mcp: tuple[str | None, list[str]] = (None, []),
+                effort: str | None = None) -> list[str]:
     kind, perm = spec["kind"], spec.get("permissions", "read")
     exe = _which(spec.get("command") or kind) or kind
     if kind == "claude":
@@ -397,6 +411,8 @@ def cli_command(spec: dict, prompt: str, session: str | None, system: str,
             cmd += ["--disallowedTools", f"Read({protect}/**)", f"Edit({protect}/**)", f"Write({protect}/**)"]
         if session:
             cmd += ["--resume", session]
+        if effort in CLI_EFFORTS:  # "none" has no CLI equivalent: model default
+            cmd += ["--effort", effort]
         extra = [f"Bash({c}:*)" for c in spec.get("allowed_commands") or []]  # e.g. Bash(slop-chop:*)
         mcp_path, mcp_rules = mcp
         if mcp_path:  # MCP servers granted in Settings; their tools are allowed at every level
@@ -1050,7 +1066,8 @@ class Runner:
             try:  # "require_tool": the first step must call a tool (read before answering)
                 reply = call_api_message(spec, system, msgs, tools,
                                          "required" if step == 0 and spec.get("require_tool") else None,
-                                         on_text=self._streamer(channel), effort=effort_for(channel),
+                                         on_text=self._streamer(channel),
+                                         effort=api_effort(effort_level(spec, channel)),
                                          on_reason=on_reason)
             except urllib.error.HTTPError as exc:
                 # A 400 with inline images: let the caller retry without images first
@@ -1115,7 +1132,8 @@ class Runner:
         msgs.append({"role": "user", "content": (
             f"(You have used all {steps} tool steps for this turn. Don't call tools. Post what you did, "
             "what you found, and exactly what is left, so the work can continue next turn.)")})
-        return with_files(call_api_message(spec, system, msgs, None, effort=effort_for(channel)).get("content") or
+        return with_files(call_api_message(spec, system, msgs, None,
+                                           effort=api_effort(effort_level(spec, channel))).get("content") or
                           f"(stopped after {steps} tool steps without a summary)")
 
     def _cli_turn(self, channel: str) -> str:
@@ -1151,7 +1169,8 @@ class Runner:
         import mcp_hub
         cmd = cli_command(spec, prompt, session, self._system(channel),
                           protect=str(Path(self.m.data_dir).resolve()),
-                          mcp=mcp_hub.claude_config(self.name, self.m.data_dir) if spec["kind"] == "claude" else (None, []))
+                          mcp=mcp_hub.claude_config(self.name, self.m.data_dir) if spec["kind"] == "claude" else (None, []),
+                          effort=effort_level(spec, channel))
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))  # only the secrets granted to this agent
         self.proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

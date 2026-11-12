@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -43,6 +44,16 @@ class CliFlagsTest(unittest.TestCase):
         edit = self.cmd("agy", "edit")
         self.assertIn("command(*)", json.loads(edit[edit.index("--settings") + 1])["permissions"]["deny"])
         self.assertNotIn("--settings", self.cmd("agy", "read"))
+
+    def test_effort_per_agent_then_channel(self):
+        cmd = agent_runner.cli_command({"kind": "claude", "permissions": "read"}, "hi", None, "S", effort="max")
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "max")
+        self.assertNotIn("--effort", agent_runner.cli_command({"kind": "claude", "permissions": "read"},
+                                                              "hi", None, "S", effort="none"))
+        with unittest.mock.patch.object(agent_runner, "effort_for", return_value="low"):
+            self.assertEqual(agent_runner.effort_level({"effort": "xhigh"}, "c"), "xhigh")
+            self.assertEqual(agent_runner.effort_level({}, "c"), "low")
+        self.assertEqual(agent_runner.api_effort("max"), "high")
 
     def test_parse_cli_output(self):
         out = json.dumps({"result": " hello ", "session_id": "s1"})
