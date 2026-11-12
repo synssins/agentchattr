@@ -106,3 +106,13 @@ class ClaudeStreamTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_thinking_keeps_its_end():
+    from agent_runner import _clip, _act_saved, ACT_LIVE
+    long = "a" * 5000 + "END"
+    assert _clip("text", long, ACT_LIVE).endswith("END")
+    assert _clip("text", long, ACT_LIVE).startswith("…")
+    assert _clip("input", long, 10) == "a" * 10
+    saved = _act_saved([{"k": "thinking", "text": long}, {"k": "text", "text": long}], 1)["steps"]
+    assert saved[0]["text"].endswith("END") and not saved[1]["text"].endswith("END")

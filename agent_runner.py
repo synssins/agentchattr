@@ -465,9 +465,17 @@ def parse_cli_output(out: str) -> tuple[str, str | None]:
     return text.strip(), sess
 
 
+def _clip(k: str, v, n: int):
+    """Trim a step field. Thinking keeps its end: that is where the model is now."""
+    if not isinstance(v, str) or len(v) <= n:
+        return v
+    return "…" + v[-n:] if k == "text" else v[:n]
+
+
 def _act_saved(items: list[dict], secs: float) -> dict:
     """The steps kept with a posted reply: trimmed so the chat log stays small."""
-    steps = [{k: (v[:ACT_SAVED.get(k, 200)] if isinstance(v, str) else v) for k, v in it.items()}
+    steps = [{k: (_clip(k, v, ACT_SAVED.get(k, 200)) if it.get("k") == "thinking"
+                  else v[:ACT_SAVED.get(k, 200)] if isinstance(v, str) else v) for k, v in it.items()}
              for it in items[-ACT_KEEP:]]
     return {"secs": round(secs, 1), "steps": steps, "dropped": max(0, len(items) - ACT_KEEP)}
 
@@ -826,7 +834,9 @@ class Runner:
         force=False rate-limits pushes (streamed thinking) to one per 0.3 s."""
         if "activity" not in self.__dict__:
             self._act_reset()
-        item = {k: (v[:ACT_LIVE] if isinstance(v, str) else v) for k, v in item.items()}
+        thinking = item.get("k") == "thinking"
+        item = {k: (_clip(k, v, ACT_LIVE) if thinking else v[:ACT_LIVE] if isinstance(v, str) else v)
+                for k, v in item.items()}
         if index is None or index >= len(self.activity):
             self.activity.append(item)
             index = len(self.activity) - 1
