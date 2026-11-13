@@ -4,7 +4,7 @@
 
 (function () {
     const PROVIDERS = {
-        strata:     { label: 'Strata (local)',  base_url: 'http://127.0.0.1:8090/v1', api_format: 'openai' },
+        strata:     { label: 'Nexus router (local)',  base_url: 'http://127.0.0.1:4000/v1', api_format: 'openai' },
         openrouter: { label: 'OpenRouter',      base_url: 'https://openrouter.ai/api/v1', api_format: 'openai',
                       help: 'Paste a key from openrouter.ai/keys, then pick a model from the list (type to filter, e.g. "claude" or "free").' },
         gemini:     { label: 'Google Gemini',   base_url: 'https://generativelanguage.googleapis.com/v1beta/openai', api_format: 'openai' },
