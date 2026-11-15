@@ -58,6 +58,8 @@ MASK_HINT = ("(An image named masked-*.png carries the area to change as transpa
 RENAME_RE = re.compile(r"\[rename\](.*?)\[/rename\]", re.S | re.I)
 # New version of a shared artifact, for agents without the artifact_update tool
 ARTIFACT_UPDATE_RE = re.compile(r"\[artifact-update\s+([A-Za-z0-9_-]{6,24})\]\n?(.*?)\[/artifact-update\]", re.S | re.I)
+REMEMBER_RE = re.compile(r"\[remember\](.*?)\[/remember\]", re.S | re.I)   # long-term memory (memory.py)
+FORGET_RE = re.compile(r"\[forget\](.*?)\[/forget\]", re.S | re.I)
 REACT_RE = re.compile(r"\[react\s+#?(\d+)\s+([^\]\s]{1,16})\s*\]", re.I)  # [react #123 😂]
 PERSONA_HELP = (
     "Your persona is your own lasting identity: personality, voice, quirks, how you work with "
@@ -666,6 +668,10 @@ class Runner:
                 return bool(re.search(rf"@{re.escape(self.name)}(?![\w-])", m.get("text", ""), re.I))
         return False
 
+    def _has_tools(self) -> bool:
+        """API agents on OpenAI-style providers call tools; the rest use reply tags."""
+        return self.spec.get("kind") == "api" and self.spec.get("api_format") != "anthropic"
+
     def _system(self, channel: str = "general", dynamic: bool = True) -> str:
         """The system prompt. API agents ask for dynamic=False: the parts that change from turn
         to turn (who else is here, whether you were named) then go in _turn_note() after the
@@ -712,6 +718,10 @@ class Runner:
             rules = []
         if rules:
             parts.append("Room rules: " + "; ".join(rules))
+        import memory  # last: a new note changes only the end of the prompt, the rest stays cached
+        mem = memory.prompt(self.name, memory.size(self.spec), tools=self._has_tools())
+        if mem:
+            parts.append(mem)
         if dynamic:
             note = self._turn_note(channel)
             if note:
@@ -782,6 +792,12 @@ class Runner:
         for mid, emoji in REACT_RE.findall(reply):
             self._react(int(mid), emoji)
         reply = REACT_RE.sub("", reply).strip()
+        import memory
+        for note in REMEMBER_RE.findall(reply):
+            log.info("%s memory: %s", self.name, memory.add(self.name, note, memory.size(self.spec)))
+        for text in FORGET_RE.findall(reply):
+            log.info("%s memory: %s", self.name, memory.forget(self.name, text))
+        reply = FORGET_RE.sub("", REMEMBER_RE.sub("", reply)).strip()
         found = PERSONA_RE.findall(reply)
         if found:
             self.m.set_persona(self.name, found[-1].strip())
@@ -1049,16 +1065,18 @@ class Runner:
         _call_ctx.agent, _call_ctx.channel = self.name, channel
         perm, allowed = spec.get("permissions", "read"), spec.get("allowed_commands") or []
         import mcp_hub
+        import memory
         tools, mcp_names = None, {}
         if spec.get("api_format") != "anthropic":
             mcp_specs, mcp_names = mcp_hub.tool_specs_for(self.name)
-            tools = agent_tools.tool_specs(perm, allowed) + mcp_specs
+            tools = agent_tools.tool_specs(perm, allowed, memory=memory.size(spec) > 0) + mcp_specs
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
                                         protect=str(Path(self.m.data_dir).resolve()),
                                         agent=self.name, channel=channel)
         runner.react = self._react
+        runner.memory_size = memory.size(spec)
         self.tools = runner
         made: list[str] = []  # files MCP tools produced ([attach: path]); attached to the reply
 
@@ -1176,6 +1194,11 @@ class Runner:
             prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         if channel in self.resuming:
             prompt = RESUME_NOTE + "\n\n" + prompt
+        if spec["kind"] == "agy" and session:  # no system-prompt flag: restate the notes, they change
+            import memory
+            notes = memory.notes(self.name, memory.size(spec))
+            if notes:
+                prompt = "(Your long-term memory notes:\n" + "\n".join(f"- {n}" for n in notes) + ")\n\n" + prompt
         cwd = os.path.expanduser(spec.get("cwd") or str(Path.home()))
         import admin_api
         import mcp_hub
@@ -1367,6 +1390,8 @@ class AgentManager:
         global METRICS_PATH, _effort_path
         _effort_path = Path(data_dir) / "effort.json"
         METRICS_PATH = Path(data_dir) / "metrics.jsonl"
+        import profiles
+        profiles.data_dir = Path(data_dir)
         self.lock = threading.Lock()
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}
@@ -1379,6 +1404,19 @@ class AgentManager:
             self.members = json.loads(self.members_path.read_text("utf-8"))
         if self.path.exists():
             self.specs = {s["name"]: s for s in json.loads(self.path.read_text("utf-8"))}
+            # Personas live in each agent's profile folder (profiles.py). Older files kept them
+            # in managed_agents.json: move them over once, keeping a copy of the old file.
+            old = any(s.get("persona") for s in self.specs.values())
+            for s in self.specs.values():
+                persona = profiles.read(s["name"], "persona.md") or s.get("persona")
+                if persona:
+                    s["persona"] = persona
+                else:
+                    s.pop("persona", None)
+            if old:
+                self._write(self.path.with_suffix(".json.bak-before-profiles"),
+                            json.loads(self.path.read_text("utf-8")))
+                self.save()
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text("utf-8"))
 
@@ -1390,7 +1428,11 @@ class AgentManager:
         os.replace(tmp, path)
 
     def save(self):
-        self._write(self.path, list(self.specs.values()))
+        """Settings go to managed_agents.json; each persona goes to the agent's profile folder."""
+        import profiles
+        for s in self.specs.values():
+            profiles.write(s["name"], "persona.md", s.get("persona") or "")
+        self._write(self.path, [{k: v for k, v in s.items() if k != "persona"} for s in self.specs.values()])
 
     def save_state(self):
         with self.lock:
@@ -1501,7 +1543,7 @@ class AgentManager:
             while self._name_taken(f"{src['name']}-{n}"):
                 n += 1
             name = f"{src['name']}-{n}"
-        # persona and memory are per instance: the new one defines its own
+        # persona and long-term memory are per instance: the new one starts without them
         spec = {k: v for k, v in src.items() if k not in ("label", "channels", "persona")}
         spec.update(name=name.lstrip("@").lower(), channels=[channel], enabled=True, spawned=True,
                     context_from=self.hub.store.last_id + 1)
@@ -1559,6 +1601,8 @@ class AgentManager:
         import rulebooks
         admin_api.rename_grants(old, new)
         rulebooks.rename_agent(old, new)
+        import profiles
+        profiles.rename(old, new)
         with self.lock:
             spec = self.specs.pop(old)
             spec.update(name=new, label=label)
@@ -1619,6 +1663,8 @@ class AgentManager:
         import rulebooks
         admin_api.rename_grants(name, None)
         rulebooks.rename_agent(name, None)
+        import profiles
+        profiles.rename(name, None)
         self.forget_member(name)
         self.specs.pop(name, None)
         self.state.pop(name, None)

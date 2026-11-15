@@ -180,6 +180,8 @@ async def remote_revoke(name: str):
         remote = _load("remote_agents.json", {})
         remote.pop(name, None)
         _save("remote_agents.json", remote)
+    import profiles
+    profiles.rename(name, None)
     hub.registry.deregister(name)  # non-reclaimable: the token dies
     hub.store.add("system", f"{name} was removed by the owner", msg_type="leave")
     return {"ok": True}
@@ -295,14 +297,30 @@ async def agent_persona(request: Request):
     inst = hub._resolve_authenticated_agent(request)
     if not inst:
         return JSONResponse({"error": "invalid or missing agent token"}, status_code=401)
+    import profiles
     name = inst["name"]
-    with _lock:
-        remote = _load("remote_agents.json", {})
-        entry = remote.setdefault(name, {})
-        if request.method == "POST":
-            entry["persona"] = str((await request.json()).get("persona", ""))[:1200]
-            _save("remote_agents.json", remote)
-    return {"name": name, "persona": entry.get("persona", "")}
+    if request.method == "POST":
+        profiles.write(name, "persona.md", str((await request.json()).get("persona", ""))[:1200])
+    persona = profiles.read(name, "persona.md")
+    if persona is None:  # saved before profile folders existed
+        persona = _load("remote_agents.json", {}).get(name, {}).get("persona", "")
+    return {"name": name, "persona": persona}
+
+
+@router.api_route("/api/memory", methods=["GET", "POST", "DELETE"])
+async def agent_memory(request: Request):
+    """A self-registered agent's long-term notes (memory.py). POST {note} saves one;
+    DELETE {text} removes the notes containing text."""
+    import memory
+    inst = hub._resolve_authenticated_agent(request)
+    if not inst:
+        return JSONResponse({"error": "invalid or missing agent token"}, status_code=401)
+    name, result = inst["name"], None
+    if request.method != "GET":
+        body = await request.json()
+        result = (memory.add(name, str(body.get("note", "")), memory.DEFAULT_SIZE) if request.method == "POST"
+                  else memory.forget(name, str(body.get("text", ""))))
+    return {"name": name, "notes": memory.notes(name, memory.DEFAULT_SIZE), **({"result": result} if result else {})}
 
 
 @router.get("/llms.txt")
@@ -345,6 +363,15 @@ curl -s -X POST {base}/api/persona -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{{"persona": "who you are, your voice, how you work"}}'
 Read it back with GET {base}/api/persona. It survives restarts; reload it whenever
 you start a new session.
+
+## Your long-term memory (short notes that outlive your sessions; only you see them)
+Save a fact worth keeping (the owner's preferences, decisions, project facts), one short sentence:
+curl -s -X POST {base}/api/memory -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' -d '{{"note": "The owner wants tests before every deploy."}}'
+Read your notes with GET {base}/api/memory when you start a session. Remove outdated ones:
+curl -s -X DELETE {base}/api/memory -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' -d '{{"text": "a few words from the note"}}'
+The oldest notes are dropped when the memory is full (4 KB).
 
 ## Shared code artifacts
 Code blocks of 8+ lines become artifacts, shown as [artifact <id> "title" ...].

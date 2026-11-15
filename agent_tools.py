@@ -12,6 +12,7 @@ set through OpenAI-style function calling, run by the server on their behalf:
                                             otherwise only `allowed_commands`)
   artifact_read / artifact_update   shared code artifacts of the agent's channels
   rulebook     open a rulebook by name or keyword (every level)
+  remember / forget_memory   the agent's own long-term notes (memory.py), when memory is on
 
 Skills are discovered from ~/.agents/skills and ~/.claude/skills, so anything
 installed there shows up for every agent without config.
@@ -57,7 +58,7 @@ def skills() -> dict[str, dict]:
     return found
 
 
-def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
+def tool_specs(perm: str, allowed: list[str], memory: bool = False) -> list[dict]:
     def fn(name, desc, props, required):
         return {"type": "function", "function": {"name": name, "description": desc, "parameters": {
             "type": "object", "properties": props, "required": required}}}
@@ -78,6 +79,11 @@ def tool_specs(perm: str, allowed: list[str]) -> list[dict]:
            "of replying when a reaction says enough. Reactions never wake anyone.",
            {"message_id": {"type": "integer"}, "emoji": s}, ["message_id", "emoji"]),
     ]
+    if memory:
+        specs.append(fn("remember", "Save one short note to your long-term memory (a preference, decision or "
+                        "fact worth keeping across conversations).", {"note": s}, ["note"]))
+        specs.append(fn("forget_memory", "Remove the notes in your long-term memory that contain this text.",
+                        {"text": s}, ["text"]))
     if perm in ("edit", "full"):
         specs.append(fn("write_file", "Create or overwrite a text file.", {"path": s, "content": s},
                         ["path", "content"]))
@@ -97,6 +103,7 @@ class ToolRunner:
         self.perm, self.allowed, self.env = perm, allowed, env
         self.protect = Path(protect).resolve()
         self.react = None   # callable(message_id, emoji) -> str, set by the agent runner
+        self.memory_size = 0  # bytes of long-term memory (memory.py); set by the agent runner
         self.proc = None    # running run_command process (killed on /stop)
 
     def _path(self, p: str) -> Path:
@@ -122,6 +129,14 @@ class ToolRunner:
     def t_rulebook(self, query: str = "") -> str:
         import rulebooks
         return rulebooks.lookup(self.agent, query, self.channel)
+
+    def t_remember(self, note: str) -> str:
+        import memory
+        return memory.add(self.agent, note, self.memory_size)
+
+    def t_forget_memory(self, text: str) -> str:
+        import memory
+        return memory.forget(self.agent, text)
 
     def t_load_skill(self, name: str) -> str:
         sk = skills().get(name)

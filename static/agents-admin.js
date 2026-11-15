@@ -144,13 +144,13 @@
             onclick: (e) => { menu.open = false; onclick(e); } });
         menu.append(dots, el('div', { class: 'agents-more-list', role: 'menu' },
             item('New context', async () => {
-                if (!confirm(`Give @${a.name} a fresh context? Its session memory is dropped; its persona stays.`)) return;
+                if (!confirm(`Give @${a.name} a fresh context? Its session memory is dropped; its persona and notes stay.`)) return;
                 agents = await api('POST', `/api/managed-agents/${encodeURIComponent(a.name)}/fresh`);
                 renderList();
             }),
             item('Duplicate', () => renderForm({ ...a, name: '', label: '', persona: '', duplicateOf: a.name })),
             item('Delete', async () => {
-                if (!confirm(`Delete ${a.name}? Its settings and session memory are removed; chat history stays.`)) return;
+                if (!confirm(`Delete ${a.name}? Its settings, persona, notes and session memory are removed; chat history stays.`)) return;
                 agents = await api('DELETE', `/api/managed-agents/${encodeURIComponent(a.name)}`);
                 renderList();
             }, 'danger')));
@@ -304,6 +304,15 @@
                 await au.play();
             } catch (err) { alert(err.message); } finally { vPreview.disabled = false; }
         });
+        // Long-term memory: the agent's own notes (profile folder on the server)
+        const memSize = el('input', { type: 'number', min: '0', max: '16384', step: '256', value: a.memory_size ?? 4096 });
+        const memText = el('textarea', { rows: 6, placeholder: editing ? 'No notes yet. The agent adds them itself; you can also write them here, one per line.' : 'Available after the agent is added.', disabled: !editing });
+        const memInfo = el('small', { text: 'Notes the agent saves about you, projects and decisions. They follow it across channels, restarts and New context. One note per line; the oldest are dropped when the size limit is reached.' });
+        let memLoaded = null;  // text as loaded: saved only when changed
+        if (editing) api('GET', `/api/managed-agents/${encodeURIComponent(a.name)}/memory`).then(m => {
+            memText.value = memLoaded = m.text;
+            memInfo.textContent += ` Using ${m.used} of ${m.size} bytes. Profile folder: ${m.folder}`;
+        }).catch(() => { memText.disabled = true; });
         const permWarn = el('small', { class: 'agents-warn',
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
@@ -345,6 +354,12 @@
                 el('small', { text: 'Providers and cloned voices are managed in Settings › Voice.' })),
             field('Persona (the agent\'s own identity; it can rewrite this itself)', persona,
                 'Kept across restarts and New context. Duplicates and spawns start without one.'),
+            el('div', { class: 'agents-field' }, el('span', { text: 'Long-term memory (the agent\'s own notes)' }),
+                memText,
+                el('div', { class: 'agents-inline' }, field('Size limit (bytes, 0 = off)', memSize),
+                    el('button', { type: 'button', class: 'agents-btn danger', text: 'Clear notes', disabled: !editing,
+                        onclick: () => { if (confirm(`Clear all of @${a.name}'s notes? This applies when you save.`)) memText.value = ''; } })),
+                memInfo),
             el('div', { class: 'agents-field' },
                 el('span', { text: 'Channels besides #general (every agent is always in #general)' }),
                 el('div', { class: 'agents-inline' }, ...chanBoxes.map(x => x.label)),
@@ -364,6 +379,7 @@
                 allowed_commands: allowedCmds.value.split(',').map(x => x.trim()).filter(Boolean),
                 voice_provider: vProvider.value, voice: vVoice.value, voice_speed: Number(vSpeed.value) || null,
                 effort: effort.value || null,
+                memory_size: memSize.value === '' ? null : Number(memSize.value),
             };
             if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {
@@ -375,6 +391,10 @@
                     no_compact: !compact.checked });
             } else {
                 Object.assign(spec, { model: cliModel.value.trim() });
+            }
+            if (editing && memLoaded !== null && memText.value !== memLoaded) {
+                try { await api('PUT', `/api/managed-agents/${encodeURIComponent(a.name)}/memory`, { text: memText.value }); }
+                catch (err) { alert(err.message); return; }
             }
             if (await save(spec) && window.AgentSound) window.AgentSound.set(spec.name, sound.value);
         });

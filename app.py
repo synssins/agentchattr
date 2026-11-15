@@ -2639,6 +2639,23 @@ async def managed_agents_fresh(name: str):
     return JSONResponse(agent_manager.list())
 
 
+@app.api_route("/api/managed-agents/{name}/memory", methods=["GET", "PUT"])
+async def managed_agents_memory(name: str, request: Request):
+    """The agent's long-term notes (memory.py). PUT body: {text} replaces them (one note per line)."""
+    import memory
+    spec = agent_manager.specs.get(name) if agent_manager else None
+    if spec is None:
+        return JSONResponse({"error": f"no agent named {name}"}, status_code=404)
+    cap = memory.size(spec)
+    if request.method == "PUT":
+        text = str((await request.json()).get("text") or "")
+        await asyncio.to_thread(memory.write, name, text, cap or memory.MAX_SIZE)
+    text = "\n".join(memory.notes(name))
+    import profiles
+    return {"name": name, "text": text, "size": cap, "used": len(text.encode("utf-8")),
+            "folder": str(profiles.folder(name).resolve())}
+
+
 @app.post("/api/channel-members")
 async def channel_members(request: Request):
     """Add/remove any agent to/from a channel. #general always has everyone."""
