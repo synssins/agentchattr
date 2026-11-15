@@ -160,6 +160,7 @@ const Voice = (() => {
         document.querySelectorAll('.voice-speak-btn.playing').forEach(b => b.classList.remove('playing'));
         playing = id;
         if (id != null) document.querySelectorAll(`.voice-speak-btn[data-id="${id}"]`).forEach(b => b.classList.add('playing'));
+        else document.querySelectorAll('.voice-part.playing').forEach(b => b.classList.remove('playing'));
         setState();
     }
 
@@ -175,8 +176,14 @@ const Voice = (() => {
         if (next) next.clip = startClip(next.agent, next.text);
     }
 
-    function enqueue(msg) {
-        for (const text of sentences(msg.text || '')) queue.push({ agent: msg.sender, text, id: msg.id });
+    // texts: replay these sentences as they are. Without it the message is split now, and the
+    // split is remembered: a replay asks for the same sentences, which the server has saved.
+    const said = {};  // message id -> sentences as first read
+    const partsOf = (msg) => said[msg.id] && said[msg.id].length ? said[msg.id] : sentences(msg.text || '');
+    function enqueue(msg, texts) {
+        const list = texts || sentences(msg.text || '');
+        if (!texts) (said[msg.id] = said[msg.id] || []).push(...list);
+        for (const text of list) queue.push({ agent: msg.sender, text, id: msg.id });
         prefetch();
         if (queue.length && !running) play();
     }
@@ -189,6 +196,7 @@ const Voice = (() => {
             part.clip = part.clip || startClip(part.agent, part.text);
             current = part.clip;
             markPlaying(part.id);
+            document.querySelectorAll('.voice-part').forEach(b => b.classList.toggle('playing', b.dataset.id === String(part.id) && b._text === part.text));
             spoken.push({ t: Date.now(), words: part.text.toLowerCase().match(/[a-z0-9']+/g) || [] });
             await playClip(part.clip, mine);
             if (mine === gen) quietUntil = Date.now() + TAIL_MS;
@@ -215,9 +223,34 @@ const Voice = (() => {
             e.stopPropagation();
             if (playing === msg.id) { stop(); return; }
             stop();
-            enqueue(msg);
+            enqueue(msg, partsOf(msg));
+            showParts(b, msg);
         };
         return b;
+    }
+
+    // One small button per sentence under a message that was read aloud: replay just that one
+    function showParts(btn, msg) {
+        const bubble = btn.closest('.chat-bubble');
+        const parts = partsOf(msg);
+        if (!bubble || parts.length < 2 || bubble.querySelector('.voice-parts')) return;
+        const row = document.createElement('div');
+        row.className = 'voice-parts';
+        row.setAttribute('role', 'group');
+        row.setAttribute('aria-label', 'Replay one sentence');
+        parts.forEach((text, i) => {
+            const p = document.createElement('button');
+            p.type = 'button';
+            p.className = 'voice-part';
+            p.dataset.id = msg.id;
+            p._text = text;
+            p.textContent = i + 1;
+            p.title = text;
+            p.setAttribute('aria-label', `Replay sentence ${i + 1}: ${text}`);
+            p.onclick = (e) => { e.stopPropagation(); stop(); enqueue(msg, [text]); };
+            row.appendChild(p);
+        });
+        bubble.appendChild(row);
     }
 
     // ---------------- Auto-speak (per channel, this browser) ----------------
@@ -248,10 +281,12 @@ const Voice = (() => {
         if (!m || m.type && m.type !== 'chat' || !m.text || m.thread != null) return;
         if ((m.channel || 'general') !== activeChannel || !isAgent(m.sender)) return;
         if (talking && target && m.sender.toLowerCase() === target) waiting = false;
-        if (!wanted(m.sender)) return;
+        if (!wanted(m.sender) && !m.metadata?.echo) return;  // /echo lines are always heard
         const st = streams[m.metadata?.stream];
         if (st) {  // most of it was spoken while streaming: only the rest
             delete streams[m.metadata.stream];
+            said[m.id] = said[m.metadata.stream] || [];  // the sentences read so far belong to this message
+            delete said[m.metadata.stream];
             const said = st.base.slice(0, st.done);
             const rest = m.text.startsWith(said) ? m.text.slice(st.done) : (st.done ? '' : m.text);
             if (rest.trim()) enqueue({ sender: m.sender, text: rest, id: m.id });

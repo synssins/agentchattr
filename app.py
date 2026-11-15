@@ -750,6 +750,27 @@ def _resolve_draft_lineage(text: str, channel: str) -> tuple[str, int]:
     return str(uuid.uuid4())[:8], 1
 
 
+ECHO_MAX = 12
+
+
+def _echo(rest: str, channel: str) -> str | None:
+    """/echo [@agent ...] text: each agent posts the text as written, with no model call, so
+    their voices can be compared on the same line. -> a note for the sender, or None."""
+    here = [n for n in registry.get_active_names() if not agent_manager or agent_manager.in_channel(n, channel)]
+    names = [n.lower() for n in _re.findall(r"(?<![\w.])@([\w-]+)", rest)]
+    line = _re.sub(r"(?<![\w.])@[\w-]+\s*", "", rest).strip()
+    if "all" in names or (not names and channel != "general"):
+        who = here
+    else:
+        who = [n for n in dict.fromkeys(names) if n in here]
+    if not line or not who:
+        return ("Usage: /echo [@agent ...] text. Each agent posts the text as written, so you can compare "
+                "voices. In #general, name the agents (or @all).")
+    for n in who[:ECHO_MAX]:
+        store.add(n, line, channel=channel, metadata={"echo": True})
+    return f"Only the first {ECHO_MAX} agents echoed." if len(who) > ECHO_MAX else None
+
+
 async def _untagged_targets(text: str, channel: str) -> list[str]:
     """Who answers a human message without an @mention (Settings > Chat > Untagged messages)."""
     import random
@@ -828,8 +849,9 @@ async def _handle_new_message(msg: dict):
     if suppress_broadcast and msg.get("id"):
         store.delete([msg["id"]])
 
-    # System messages never trigger routing - prevents infinite callback loops
-    if sender == "system":
+    # System messages never trigger routing - prevents infinite callback loops.
+    # Neither do /echo lines: the agent only lent its name and voice.
+    if sender == "system" or (msg.get("metadata") or {}).get("echo"):
         return
 
     # Check for slash commands — use stripped text (sans @mentions)
@@ -1350,6 +1372,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         else:
                             note = await asyncio.to_thread(runners[names[0]].forget, channel)
                         store.add("system", note, msg_type="system", channel=channel)
+                        continue
+                    if cmd == "/echo":
+                        note = _echo(text[len("/echo"):], channel)
+                        if note:
+                            store.add("system", note, msg_type="system", channel=channel)
                         continue
                     if cmd == "/continue":
                         router.continue_routing(channel)  # this channel's loop guard, not #general's
@@ -2526,8 +2553,18 @@ async def voice_config_save(request: Request):
         name = str(p.get("name", "")).strip()[:40]
         if not name or not str(p.get("base_url", "")).startswith(("http://", "https://")):
             return JSONResponse({"error": "each provider needs a name and an http(s) base URL"}, status_code=400)
-        keep = {k: str(p[k]).strip() for k in ("base_url", "model", "format", "voices_url", "clone_url", "default_voice")
-                if p.get(k)}
+        keep = {k: str(p[k]).strip() for k in ("base_url", "model", "format", "voices_url", "clone_url", "default_voice",
+                                               "capabilities_url") if p.get(k)}
+        if isinstance(p.get("parameters"), dict) and p["parameters"]:
+            try:  # checked against what the engine advertises; stored as sent when it can't be asked
+                specs = await asyncio.to_thread(voice.capabilities, {**old.get(name, {}), **keep})
+            except Exception:
+                specs = None
+            params, err = voice.check_parameters(specs, p["parameters"]) if specs is not None else (p["parameters"], None)
+            if err:
+                return JSONResponse({"error": f"{name}: {err}"}, status_code=400)
+            if params:
+                keep["parameters"] = params
         if p.get("stream") in (True, "true", "1", "yes"):
             keep["stream"] = True  # provider streams raw PCM16 (POST stream=true, response_format=pcm)
         if str(p.get("sample_rate") or "").isdigit():
@@ -2540,10 +2577,25 @@ async def voice_config_save(request: Request):
     conf["providers"] = providers
     names = [p["name"] for p in providers]
     conf["default_provider"] = body.get("default_provider") if body.get("default_provider") in names else names[0]
+    if str(body.get("cache_mb", "")).isdigit():
+        conf["cache_mb"] = min(int(body["cache_mb"]), 100000)
     if isinstance(body.get("stt"), dict) and ":" in str(body["stt"].get("wyoming", "")):
         conf["stt"] = {"wyoming": str(body["stt"]["wyoming"]).strip(), "language": str(body["stt"].get("language") or "en")[:8]}
     voice.save(conf)
     return await voice_config()
+
+
+@app.get("/api/voice/capabilities")
+async def voice_capabilities(provider: str):
+    """The engine parameters a saved provider advertises (Settings > Voice draws its controls from this)."""
+    import voice
+    p = next((x for x in voice.load()["providers"] if x["name"] == provider), None)
+    if not p:
+        return JSONResponse({"error": "save the provider first"}, status_code=404)
+    try:
+        return {"parameters": await asyncio.to_thread(voice.capabilities, p)}
+    except Exception as exc:
+        return JSONResponse({"error": f"the service does not list its parameters ({str(exc)[:160]})"}, status_code=502)
 
 
 @app.post("/api/voice/speak")

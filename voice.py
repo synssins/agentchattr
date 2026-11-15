@@ -4,10 +4,17 @@ external APIs) and speech-to-text through a Wyoming server (wyoming-whisper).
 Providers live in data/voice.json (owner-editable in Settings > Voice). Each agent picks a
 provider, voice and speed on its own page (spec fields voice_provider, voice, voice_speed).
 Cloning uploads a short sample to a provider that keeps a voice library (Chatterbox POST /voices).
+
+Engine parameters: a provider says which extra settings it takes (capabilities()), the owner
+sets them in Settings > Voice, and they are sent with every request (provider "parameters").
+
+Saved audio: every rendered sentence is kept in data/voice_cache, keyed by provider, voice,
+settings and text, so replaying a message plays the same audio again at once.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -15,6 +22,7 @@ import re
 import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import wave
@@ -33,6 +41,7 @@ DEFAULTS = {
     ],
     "default_provider": "Kokoro",
     "stt": {"wyoming": "127.0.0.1:10300", "language": "en"},
+    "cache_mb": 512,   # saved audio kept on disk; 0 = keep none
 }
 TIMEOUT = 120  # Chatterbox on CPU takes ~9 s per sentence
 
@@ -102,15 +111,126 @@ def speakable(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-def speak(text: str, provider_name: str | None = None, voice: str | None = None,
-          speed: float | None = None) -> tuple[bytes, str]:
-    """-> (audio bytes, media type)."""
+# ---------------------------------------------------------------- engine parameters
+
+CORE = {"input", "text", "voice", "model", "response_format", "stream", "speed", "audio_base64"}  # set by AgentHub
+TYPES = ("integer", "number", "boolean", "string")
+
+
+def capabilities(p: dict) -> list[dict]:
+    """The extra request settings a provider advertises, as [{name, type, min, max, step, enum,
+    default, description, advanced}]. Read from the provider's "capabilities_url" (a document with
+    a "parameters" list, as tts-serve publishes) or, without one, from the service's own
+    /openapi.json (the request body of POST …/audio/speech). Raises when neither can be read."""
+    key = p.get("api_key", "")
+    if p.get("capabilities_url"):
+        items = [(x.get("name"), x) for x in _get(p["capabilities_url"], key).get("parameters") or []
+                 if isinstance(x, dict)]
+    else:
+        u = urllib.parse.urlsplit(p["base_url"])
+        doc = _get(f"{u.scheme}://{u.netloc}/openapi.json", key)
+        post = next((v["post"] for k, v in doc.get("paths", {}).items()
+                     if k.endswith("/audio/speech") and "post" in v), None)
+        if not post:
+            raise ValueError("the service's openapi.json has no /audio/speech request")
+        schema = post.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+        if "$ref" in schema:
+            schema = doc.get("components", {}).get("schemas", {}).get(schema["$ref"].rsplit("/", 1)[-1], {})
+        items = list((schema.get("properties") or {}).items())
+    out = []
+    for name, raw in items:
+        for alt in raw.get("anyOf") or []:  # "number or null": the limits sit on the typed branch
+            if isinstance(alt, dict) and alt.get("type") in TYPES:
+                raw = {**alt, **raw, "type": alt["type"]}
+        if not name or name in CORE or raw.get("type") not in TYPES:
+            continue
+        out.append({"name": name, "type": raw["type"], "min": raw.get("min", raw.get("minimum")),
+                    "max": raw.get("max", raw.get("maximum")), "step": raw.get("step"),
+                    "enum": raw.get("enum") if isinstance(raw.get("enum"), list) else None,
+                    "default": raw.get("default"), "advanced": bool(raw.get("advanced")),
+                    "description": str(raw.get("description") or raw.get("title") or "")[:300]})
+    return out
+
+
+def check_parameters(specs: list[dict], values: dict) -> tuple[dict, str | None]:
+    """Values for a provider's engine parameters -> (the values to store, or an error message).
+    Blank values are left out (the engine's default applies), and so is anything not advertised."""
+    by, clean = {x["name"]: x for x in specs}, {}
+    for name, v in (values or {}).items():
+        spec = by.get(name)
+        if spec is None or v is None or v == "":
+            continue
+        t = spec["type"]
+        try:
+            if t == "boolean":
+                if str(v).lower() not in ("true", "false"):
+                    raise ValueError
+                v = str(v).lower() == "true"
+            elif t == "integer":
+                if float(v) != int(float(v)):
+                    raise ValueError
+                v = int(float(v))
+            elif t == "number":
+                v = float(v)
+            else:
+                v = str(v)
+        except (TypeError, ValueError):
+            return {}, f"{name} must be {'an' if t == 'integer' else 'a'} {t}"
+        lo, hi = spec.get("min"), spec.get("max")
+        if t in ("integer", "number") and ((lo is not None and v < lo) or (hi is not None and v > hi)):
+            return {}, f"{name} must be between {lo if lo is not None else '-∞'} and {hi if hi is not None else '∞'}"
+        if spec.get("enum") and v not in spec["enum"]:
+            return {}, f"{name} must be one of: {', '.join(map(str, spec['enum']))}"
+        clean[name] = v
+    return clean, None
+
+
+# ---------------------------------------------------------------- saved audio
+
+def _cache_file(p: dict, body: dict) -> Path:
+    key = json.dumps([p["base_url"], body], sort_keys=True, ensure_ascii=False)
+    return data_dir / "voice_cache" / hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _cache_get(path: Path) -> tuple[dict, bytes] | None:
+    """-> (meta, audio) saved earlier for this exact request, or None."""
+    try:
+        head, _, audio = path.read_bytes().partition(b"\n")
+        os.utime(path)  # recently played audio is pruned last
+        return json.loads(head), audio
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_put(path: Path, meta: dict, audio: bytes):
+    limit = int(load().get("cache_mb") or 0) * 1024 * 1024
+    if not audio or len(audio) > limit:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = path.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
+        tmp.write_bytes(json.dumps(meta).encode() + b"\n" + audio)
+        os.replace(tmp, path)
+        files = sorted(((f.stat().st_mtime, f.stat().st_size, f) for f in path.parent.iterdir()), key=lambda x: x[0])
+        total = sum(size for _, size, _ in files)
+        for _, size, f in files:  # oldest first, until the folder fits
+            if total <= limit:
+                break
+            f.unlink(missing_ok=True)
+            total -= size
+    except OSError:
+        pass  # saving is best effort; the audio was still played
+
+
+def _request(text: str, provider_name: str | None, voice: str | None, speed: float | None,
+             **extra) -> tuple[dict, dict, urllib.request.Request]:
+    """-> (provider, request body, the /audio/speech request)."""
     p = provider(provider_name)
     text = speakable(text)[:3000]
     if not text:
         raise ValueError("nothing to read aloud")
-    body = {"input": text, "voice": voice or p.get("default_voice") or "alloy",
-            "response_format": p.get("format") or "mp3"}
+    body = {**(p.get("parameters") or {}), "input": text,
+            "voice": voice or p.get("default_voice") or "alloy", **extra}
     if p.get("model"):
         body["model"] = p["model"]
     if speed:
@@ -118,41 +238,47 @@ def speak(text: str, provider_name: str | None = None, voice: str | None = None,
     headers = {"Content-Type": "application/json"}
     if p.get("api_key"):
         headers["Authorization"] = f"Bearer {p['api_key']}"
-    url = p["base_url"].rstrip("/") + "/audio/speech"
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+    return p, body, urllib.request.Request(p["base_url"].rstrip("/") + "/audio/speech",
+                                           data=json.dumps(body).encode(), headers=headers)
+
+
+def speak(text: str, provider_name: str | None = None, voice: str | None = None,
+          speed: float | None = None) -> tuple[bytes, str]:
+    """-> (audio bytes, media type)."""
+    p, body, req = _request(text, provider_name, voice, speed,
+                            response_format=provider(provider_name).get("format") or "mp3")
+    path = _cache_file(p, body)
+    hit = _cache_get(path)
+    if hit:
+        return hit[1], hit[0].get("media") or "audio/mpeg"
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        return r.read(), r.headers.get("Content-Type") or "audio/mpeg"
+        audio, media = r.read(), r.headers.get("Content-Type") or "audio/mpeg"
+    _cache_put(path, {"media": media}, audio)
+    return audio, media
 
 
 def speak_stream(text: str, provider_name: str | None = None, voice: str | None = None,
                  speed: float | None = None):
     """For providers with "stream": true -> (sample rate, iterator of raw PCM16 mono bytes).
     Bytes are passed on as the provider produces them, so playback starts on the first chunk."""
-    p = provider(provider_name)
-    text = speakable(text)[:3000]
-    if not text:
-        raise ValueError("nothing to read aloud")
-    body = {"input": text, "voice": voice or p.get("default_voice") or "alloy",
-            "response_format": "pcm", "stream": True}
-    if p.get("model"):
-        body["model"] = p["model"]
-    if speed:
-        body["speed"] = max(0.5, min(2.0, float(speed)))
-    headers = {"Content-Type": "application/json"}
-    if p.get("api_key"):
-        headers["Authorization"] = f"Bearer {p['api_key']}"
-    req = urllib.request.Request(p["base_url"].rstrip("/") + "/audio/speech", data=json.dumps(body).encode(),
-                                 headers=headers)
+    p, body, req = _request(text, provider_name, voice, speed, response_format="pcm", stream=True)
+    path = _cache_file(p, body)
+    hit = _cache_get(path)
+    if hit:
+        return int(hit[0].get("rate") or 24000), (hit[1][i:i + 8192] for i in range(0, len(hit[1]), 8192))
     resp = urllib.request.urlopen(req, timeout=TIMEOUT)
     rate = int(resp.headers.get("X-Sample-Rate") or p.get("sample_rate") or 24000)
 
     def chunks():
+        got = []
         with resp:
             while True:
                 b = resp.read1(8192)
                 if not b:
-                    return
+                    break
+                got.append(b)
                 yield b
+        _cache_put(path, {"rate": rate}, b"".join(got))  # only a sentence that was rendered to the end
     return rate, chunks()
 
 

@@ -71,3 +71,25 @@
     font-style: italic;
 }
 .voice-draft-label { color: var(--accent); font-style: normal; font-size: 12px; margin-right: 6px; }
+
+/* Per-sentence replay under a message that was read aloud */
+.voice-parts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.voice-part {
+    min-width: 24px;
+    padding: 1px 6px;
+    font: inherit;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 6px);
+    cursor: pointer;
+}
+.voice-part:hover, .voice-part:focus-visible { color: var(--text); border-color: var(--accent); }
+.voice-part.playing { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
+
+/* Engine parameters in Settings > Voice */
+.voice-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 16px; margin: 8px 0; }
+.voice-param-range { display: flex; align-items: center; gap: 8px; }
+.voice-param-range input[type="range"] { flex: 1; min-width: 0; }
+.voice-param-range output { min-width: 5.5em; font-size: 12px; color: var(--text-dim); text-align: right; }

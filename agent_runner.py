@@ -887,6 +887,7 @@ class Runner:
         recent = [m for m in self.m.hub.store.get_recent(4 * n + 20, channel=channel)
                   if m["id"] >= start  # spawned/fresh instance: conversation starts there
                   and m.get("sender") not in ("system", "") and m.get("type", "chat") == "chat"
+                  and not (m.get("metadata") or {}).get("echo")  # /echo lines are voice tests, not talk
                   and m.get("thread") is None]  # thread replies stay out of the channel context
         if not recent:
             return []
@@ -1179,7 +1180,7 @@ class Runner:
             new = store.get_since(cursor, channel=channel) if session else \
                 store.get_recent(int(spec.get("context_messages") or 30), channel=channel)
             new = [m for m in new if m.get("type", "chat") == "chat" and m.get("sender") != self.name
-                   and m.get("thread") is None]
+                   and m.get("thread") is None and not (m.get("metadata") or {}).get("echo")]
         start = int(spec.get("context_from") or 0)
         new = [m for m in new if m["id"] >= start]
         if not new:

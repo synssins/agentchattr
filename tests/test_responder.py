@@ -86,5 +86,43 @@ class Untagged(unittest.TestCase):
             self.assertIn(self.run_it("hello", "team")[0], ["a", "b"])
 
 
+class Echo(unittest.TestCase):
+    """/echo: agents post the line as written; nobody is woken and it stays out of their context."""
+
+    def setUp(self):
+        import tempfile
+        import app
+        from store import MessageStore
+        self.app = app
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = MessageStore(str(Path(tmp.name) / "log.jsonl"))
+        members = {"a": ["general", "team"], "b": ["general", "team"], "c": ["general"]}
+        names = lambda: ["a", "b", "c"]
+        for p in (mock.patch.object(app, "registry", types.SimpleNamespace(get_active_names=names, get_all_names=names)),
+                  mock.patch.object(app, "agent_manager", types.SimpleNamespace(in_channel=lambda n, ch: ch in members[n])),
+                  mock.patch.object(app, "store", self.store)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_named_agents_or_the_whole_team_channel_echo(self):
+        self.assertIsNone(self.app._echo(" @B @nobody Hello, world.", "general"))
+        self.assertIsNone(self.app._echo(" Testing one two.", "team"))
+        got = [(m["sender"], m["text"], m["channel"], m["metadata"]) for m in self.store.get_recent(9)]
+        self.assertEqual(got, [("b", "Hello, world.", "general", {"echo": True}),
+                               ("a", "Testing one two.", "team", {"echo": True}),
+                               ("b", "Testing one two.", "team", {"echo": True})])
+        self.assertIn("Usage", self.app._echo(" no names in general", "general"))
+        self.assertIn("Usage", self.app._echo(" @a", "general"))
+
+    def test_echo_lines_wake_nobody(self):
+        woken = []
+        with mock.patch.object(self.app, "broadcast", mock.AsyncMock()), \
+                mock.patch.object(self.app, "router", types.SimpleNamespace(get_targets=lambda *a: woken.append(a) or [])):
+            asyncio.run(self.app._handle_new_message(
+                {"id": 1, "sender": "a", "text": "@b say hi", "channel": "team", "metadata": {"echo": True}}))
+        self.assertEqual(woken, [])
+
+
 if __name__ == "__main__":
     unittest.main()

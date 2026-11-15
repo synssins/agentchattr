@@ -261,11 +261,59 @@
             el('span', { text: 'Interrupt an agent by talking over it (barge-in). Use with headphones: with speakers the mic hears the agent. Off: the mic pauses while an agent speaks.' })));
         panel.append(el('label', { class: 'agents-field' }, el('span', { text: 'Mic button (voice typing, this browser)' }), typing),
             el('h3', { text: 'Speech providers' }));
-        const rows = conf.providers.map(p => ({ ...p }));
+        const rows = conf.providers.map(p => ({ ...p, parameters: { ...(p.parameters || {}) } }));
         const list = el('div');
         const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format (mp3, wav)'],
             ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL (cloning)'], ['default_voice', 'Default voice'],
-            ['sample_rate', 'Sample rate (streaming, if not sent)']];
+            ['sample_rate', 'Sample rate (streaming, if not sent)'], ['capabilities_url', 'Parameters URL (blank: the service\'s openapi.json)']];
+        // Engine parameters: each service says which settings it takes; controls are drawn from that
+        const caps = {};  // provider name -> promise of [{name, type, min, max, ...}]
+        const paramControl = (spec, values) => {
+            const set = (v) => { if (v === '' || v == null) delete values[spec.name]; else values[spec.name] = v; };
+            const dflt = spec.default == null ? '' : ` (${spec.default})`;
+            let input;
+            if (spec.enum || spec.type === 'boolean') {
+                const opts = spec.enum ? spec.enum.map(String) : ['true', 'false'];
+                input = el('select', {}, el('option', { value: '', text: `Engine default${dflt}` }),
+                    ...opts.map(o => el('option', { value: o, text: spec.enum ? o : (o === 'true' ? 'On' : 'Off') })));
+                input.value = values[spec.name] == null ? '' : String(values[spec.name]);
+                input.addEventListener('change', () => set(input.value));
+            } else if (spec.type !== 'string' && spec.min != null && spec.max != null) {
+                const out = el('output');
+                const show = () => { out.textContent = values[spec.name] == null ? `default${dflt}` : String(values[spec.name]); };
+                const range = el('input', { type: 'range', min: spec.min, max: spec.max,
+                    step: spec.step || (spec.type === 'integer' ? 1 : (spec.max - spec.min) / 100), 'aria-label': spec.name });
+                range.value = values[spec.name] ?? spec.default ?? spec.min;
+                range.addEventListener('input', () => { set(Number(range.value)); show(); });
+                show();
+                input = el('div', { class: 'voice-param-range' }, range, out);
+            } else {
+                input = el('input', { type: spec.type === 'string' ? 'text' : 'number', step: spec.type === 'integer' ? 1 : 'any',
+                    min: spec.min, max: spec.max, value: values[spec.name] ?? '', placeholder: `Engine default${dflt}` });
+                input.addEventListener('input', () => set(input.value));
+            }
+            return el('label', { class: 'agents-field' }, el('span', { text: spec.name }), input,
+                spec.description ? el('small', { text: spec.description }) : null);
+        };
+        const drawParams = async (box, r) => {
+            box.textContent = '';
+            if (!conf.providers.some(p => p.name === r.name)) return;  // not saved yet: nothing to ask
+            let specs;
+            try {
+                caps[r.name] = caps[r.name] || api('GET', '/api/voice/capabilities?provider=' + encodeURIComponent(r.name));
+                specs = (await caps[r.name]).parameters;
+            } catch (_) { return; }  // the service lists no parameters: nothing to set
+            if (!specs.length) return;
+            r.parameters = r.parameters || {};
+            const grid = (list) => el('div', { class: 'voice-params' }, ...list.map(sp => paramControl(sp, r.parameters)));
+            const adv = specs.filter(sp => sp.advanced);
+            box.append(el('strong', { text: 'Engine parameters' }),
+                el('small', { text: ' Sent with every request to this provider. Unset values use the engine\'s own default.' }),
+                grid(specs.filter(sp => !sp.advanced)),
+                adv.length ? el('details', {}, el('summary', { text: 'Advanced' }), grid(adv)) : null,
+                el('button', { type: 'button', class: 'agents-btn', text: 'Reset to defaults',
+                    onclick: () => { r.parameters = {}; drawParams(box, r); } }));
+        };
         const def = el('select', { 'aria-label': 'Default provider' });
         const draw = () => {
             list.textContent = '';
@@ -285,7 +333,9 @@
                 grid.append(el('label', { class: 'agents-field' }, el('span', { text: 'API key' }), key));
                 const err = (conf.voices[r.name] || {}).error;
                 const count = (conf.voices[r.name] || {}).voices?.length;
-                box.append(grid, el('small', { class: err ? 'agents-warn' : '', text: err ? `Unreachable: ${err}` : count != null ? `${count} voices` : '' }),
+                const params = el('div');
+                drawParams(params, r);
+                box.append(grid, params, el('small', { class: err ? 'agents-warn' : '', text: err ? `Unreachable: ${err}` : count != null ? `${count} voices` : '' }),
                     el('button', { type: 'button', class: 'agents-btn danger', text: 'Remove', onclick: () => { rows.splice(i, 1); draw(); } }));
                 list.append(box);
             });
@@ -296,10 +346,11 @@
         draw();
         const stt = el('input', { value: conf.stt.wyoming, placeholder: 'host:port' });
         const lang = el('input', { value: conf.stt.language || 'en', placeholder: 'en' });
+        const cacheMb = el('input', { type: 'number', min: '0', max: '100000', value: conf.cache_mb ?? 512 });
         const save = el('button', { type: 'button', class: 'agents-btn primary', text: 'Save voice settings' });
         save.onclick = async () => {
             try {
-                await api('POST', '/api/voice/config', { providers: rows, default_provider: def.value,
+                await api('POST', '/api/voice/config', { providers: rows, default_provider: def.value, cache_mb: cacheMb.value,
                     stt: { wyoming: stt.value.trim(), language: lang.value.trim() } });
                 show('voice');
             } catch (err) { alert(err.message); }
@@ -310,7 +361,9 @@
             el('div', { class: 'agents-inline' },
                 el('label', { class: 'agents-field' }, el('span', { text: 'Default provider' }), def),
                 el('label', { class: 'agents-field' }, el('span', { text: 'Speech-to-text (Wyoming Whisper)' }), stt),
-                el('label', { class: 'agents-field' }, el('span', { text: 'Language' }), lang)),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Language' }), lang),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Saved audio (MB, 0 = off)' }), cacheMb,
+                    el('small', { text: 'Sentences read aloud are kept on the server, so a replay plays the same audio at once. The oldest are removed when this is full.' }))),
             el('div', { class: 'agents-actions' }, save));
 
         // Clone a voice from a short sample
