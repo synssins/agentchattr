@@ -22,7 +22,8 @@ data_dir = Path("./data")   # set by AgentManager
 def folder(name: str, make: bool = False) -> Path:
     d = data_dir / "agents" / re.sub(r"[^a-z0-9_-]", "_", name.lower())
     if make:
-        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        d.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        d.mkdir(exist_ok=True, mode=0o700)
     return d
 
 

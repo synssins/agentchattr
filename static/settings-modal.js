@@ -282,7 +282,7 @@
                 const out = el('output');
                 const show = () => { out.textContent = values[spec.name] == null ? `default${dflt}` : String(values[spec.name]); };
                 const range = el('input', { type: 'range', min: spec.min, max: spec.max,
-                    step: spec.step || (spec.type === 'integer' ? 1 : (spec.max - spec.min) / 100), 'aria-label': spec.name });
+                    step: spec.step || (spec.type === 'integer' ? 1 : 0.01), 'aria-label': spec.name });
                 range.value = values[spec.name] ?? spec.default ?? spec.min;
                 range.addEventListener('input', () => { set(Number(range.value)); show(); });
                 show();
@@ -310,7 +310,7 @@
             box.append(el('strong', { text: 'Engine parameters' }),
                 el('small', { text: ' Sent with every request to this provider. Unset values use the engine\'s own default.' }),
                 grid(specs.filter(sp => !sp.advanced)),
-                adv.length ? el('details', {}, el('summary', { text: 'Advanced' }), grid(adv)) : null,
+                adv.length ? el('details', {}, el('summary', { text: 'Advanced' }), grid(adv)) : '',
                 el('button', { type: 'button', class: 'agents-btn', text: 'Reset to defaults',
                     onclick: () => { r.parameters = {}; drawParams(box, r); } }));
         };

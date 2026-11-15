@@ -52,7 +52,8 @@ def _save(name: str, lines: list[str]):
 def write(name: str, text: str, cap: int = MAX_SIZE) -> list[str]:
     """Replace all notes (the owner's edit). -> the notes kept."""
     with _lock:
-        lines = _fit([re.sub(r"\s+", " ", l).strip()[:MAX_NOTE] for l in (text or "").splitlines()], cap)
+        lines = _fit(list(dict.fromkeys(re.sub(r"\s+", " ", l).strip()[:MAX_NOTE]
+                                        for l in (text or "").splitlines())), cap)
         _save(name, lines)
     return lines
 
