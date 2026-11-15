@@ -2106,6 +2106,10 @@ function applySettings(data) {
     if (data.rules_refresh_interval !== undefined) {
         document.getElementById('setting-rules-refresh').value = String(data.rules_refresh_interval);
     }
+    document.getElementById('setting-untagged').value = data.untagged || 'channel';
+    document.getElementById('setting-name-mentions').value = data.name_mentions ? '1' : '0';
+    document.getElementById('setting-picker').dataset.current = data.picker_agent || '';  // kept while the list loads
+    fillPickerAgents(data.picker_agent || '');
     if (Array.isArray(data.custom_roles)) {
         window.customRoles = data.custom_roles;
     }
@@ -2215,6 +2219,20 @@ function applyTheme(theme) {
     if (link) link.href = HLJS_CSS + (theme === 'light' ? 'github.min.css' : 'github-dark.min.css');
 }
 
+// Picking model (Settings > Chat): the API agents that can choose who answers
+async function fillPickerAgents(current) {
+    const sel = document.getElementById('setting-picker');
+    let agents = [];
+    try {
+        agents = await (await fetch('/api/managed-agents', { headers: { 'X-Session-Token': window.SESSION_TOKEN } })).json();
+    } catch (e) { /* keep Automatic only */ }
+    sel.innerHTML = '<option value="">Automatic</option>' + agents.filter(a => a.kind === 'api')
+        .map(a => `<option value="${escapeHtml(a.name)}">@${escapeHtml(a.name)} (${escapeHtml(a.model || '?')})</option>`).join('');
+    sel.value = current;
+    if (sel.value !== current) sel.value = '';
+}
+document.getElementById('setting-picker').addEventListener('change', (e) => { e.target.dataset.current = e.target.value; });
+
 function saveSettings() {
     const newUsername = document.getElementById('setting-username').value.trim();
     const newSubtitle = document.getElementById('setting-subtitle').value.trim();
@@ -2238,6 +2256,9 @@ function saveSettings() {
                 contrast: newContrast,
                 theme: newTheme,
                 rules_refresh_interval: parseInt(newRulesRefresh) || 0,
+                untagged: document.getElementById('setting-untagged').value,
+                name_mentions: document.getElementById('setting-name-mentions').value === '1',
+                picker_agent: document.getElementById('setting-picker').dataset.current || '',
             }
         }));
     }
@@ -2260,7 +2281,8 @@ function setupSettingsKeys() {
     }
 
     // Auto-save on change for selects, escape to close
-    for (const id of ['setting-theme', 'setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh']) {
+    for (const id of ['setting-theme', 'setting-font', 'setting-history', 'setting-contrast', 'setting-rules-refresh',
+                      'setting-untagged', 'setting-picker', 'setting-name-mentions']) {
         const el = document.getElementById(id);
         el.addEventListener('change', () => {
             if (id === 'setting-theme') applyTheme(el.value);

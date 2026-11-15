@@ -111,6 +111,27 @@
                 </div>
             </div>
             <div class="settings-field" data-group="chat">
+                <label for="setting-untagged">Untagged messages</label>
+                <select id="setting-untagged" title="Who answers a message that names nobody with @">
+                    <option value="channel">The channel's agents (#general: nobody)</option>
+                    <option value="pick">The best-suited agent (a model picks)</option>
+                    <option value="random">One agent at random</option>
+                </select>
+            </div>
+            <div class="settings-field" data-group="chat">
+                <label for="setting-picker">Picking model</label>
+                <select id="setting-picker" title="The API agent whose model picks who answers">
+                    <option value="">Automatic</option>
+                </select>
+            </div>
+            <div class="settings-field" data-group="chat">
+                <label for="setting-name-mentions">Names without @</label>
+                <select id="setting-name-mentions" title="A message that contains an agent's name is addressed to that agent">
+                    <option value="0">Ignored</option>
+                    <option value="1">Address that agent</option>
+                </select>
+            </div>
+            <div class="settings-field" data-group="chat">
                 <label for="setting-history">Messages loaded</label>
                 <select id="setting-history">
                     <option value="all">All</option>
@@ -408,13 +429,13 @@
     <script src="/static/jobs.js?v=226"></script>
     <script src="/static/channels.js?v=229"></script>
     <script src="/static/rules-panel.js?v=224"></script>
-    <script src="/static/chat.js?v=297"></script>
+    <script src="/static/chat.js?v=298"></script>
     <script src="/static/maskpaint.js?v=2"></script>
     <script src="/static/artifacts.js?v=2"></script>
     <script src="/static/voice.js?v=5"></script>
     <script src="/static/control.js?v=7"></script>
     <script src="/static/activity.js?v=1"></script>
     <script src="/static/agents-admin.js?v=17"></script>
-    <script src="/static/settings-modal.js?v=13"></script>
+    <script src="/static/settings-modal.js?v=14"></script>
 </body>
 </html>

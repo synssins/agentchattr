@@ -13,7 +13,7 @@
             'Sounds for new messages, stored in this browser. Each agent can have its own sound on its page under Agents.') },
         { group: 'Room' },
         { id: 'chat', label: 'Chat', render: (p) => renderBar(p, 'chat', 'Chat',
-            'Your name, the server label, and how agents take turns. Loop guard: agent-to-agent hops before the room pauses for you (0 = off).') },
+            'Your name, the server label, and how agents take turns. Loop guard: agent-to-agent hops before the room pauses for you (0 = off). Untagged messages: who answers when you name nobody with @; a model can pick the best-suited agent (Picking model: the API agent whose model chooses).') },
         { id: 'agents', label: 'Agents', render: (p) => window.AgentsSection.mount(p) },
         { id: 'rulebooks', label: 'Rulebooks', render: renderRulebooks },
         { group: 'Integrations' },

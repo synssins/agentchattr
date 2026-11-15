@@ -750,6 +750,38 @@ def _resolve_draft_lineage(text: str, channel: str) -> tuple[str, int]:
     return str(uuid.uuid4())[:8], 1
 
 
+async def _untagged_targets(text: str, channel: str) -> list[str]:
+    """Who answers a human message without an @mention (Settings > Chat > Untagged messages)."""
+    import random
+    import responder
+    here = [n for n in registry.get_active_names() if agent_manager.in_channel(n, channel)]
+    specs = agent_manager.specs
+    if room_settings.get("name_mentions"):
+        named = responder.named(text, {n: specs.get(n, {}).get("label") or n for n in here})
+        if named:
+            return named
+    mode = room_settings.get("untagged", "channel")
+    if mode == "random" and here:
+        return [random.choice(here)]
+    if mode == "pick" and len(here) > 1:
+        apis = [s for s in specs.values() if s.get("kind") == "api" and s.get("enabled", True)]
+        picker = (specs.get(room_settings.get("picker_agent") or "")
+                  or next((s for s in apis if s["name"] in here), None) or next(iter(apis), None))
+        if picker and picker.get("kind") == "api":
+            import mcp_bridge
+            about = {n: " ".join(str(x) for x in (mcp_bridge.get_role(n), specs.get(n, {}).get("system_prompt"),
+                                                  specs.get(n, {}).get("persona")) if x)[:300] for n in here}
+            recent = [f"{m['sender']}: {m.get('text', '')[:300]}" for m in store.get_recent(7, channel=channel)
+                      if m.get("type", "chat") == "chat"][:-1]
+            chosen = await asyncio.to_thread(responder.pick, picker, about, recent, text[:2000])
+            return [chosen or random.choice(here)]
+        return [random.choice(here)]
+    if mode == "pick" and here:
+        return here
+    # Default: a team channel's own agents (#general holds everyone, so there it takes @all or @name)
+    return here if channel != "general" else []
+
+
 async def _handle_new_message(msg: dict):
     """Broadcast message to web clients + check for @mention triggers."""
     # For broadcast slash commands, suppress the raw message — only the expanded
@@ -913,10 +945,10 @@ async def _handle_new_message(msg: dict):
     raw_targets = router.get_targets(sender, text, channel)
     # Team channels: an untagged message from a human goes to the channel's own
     # agents (#general holds everyone, so there it still takes @all or @name).
-    if (not raw_targets and channel != "general" and agent_manager and msg_type == "chat"
+    if (not raw_targets and agent_manager and msg_type == "chat"
             and sender not in known_agents and sender != "system"
             and not _re.search(r"(?<![\w.])@[\w-]+", text)):  # any @handle (even unknown/renamed) = tagged
-        raw_targets = [n for n in registry.get_active_names() if agent_manager.in_channel(n, channel)]
+        raw_targets = await _untagged_targets(text, channel)
     # Resolve base family names to actual registered instances
     # e.g. 'claude' → 'claude-prime' when slot-1 was renamed
     targets = []
@@ -1490,6 +1522,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             room_settings["history_limit"] = max(1, min(val_int, 10000))
                         except (ValueError, TypeError):
                             pass
+                if new.get("untagged") in ("channel", "pick", "random"):
+                    room_settings["untagged"] = new["untagged"]
+                if "name_mentions" in new:
+                    room_settings["name_mentions"] = bool(new["name_mentions"])
+                if "picker_agent" in new:
+                    room_settings["picker_agent"] = str(new["picker_agent"] or "")[:32]
                 if "custom_roles" in new and isinstance(new["custom_roles"], list):
                     room_settings["custom_roles"] = [
                         str(r).strip()[:20] for r in new["custom_roles"]
