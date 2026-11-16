@@ -2857,9 +2857,9 @@ async def device_reply(request: Request):
 async def device_audio(message_id: int, request: Request):
     """Speech for an agent message in the device's channel, in that agent's voice. WAV when the
     provider streams PCM; otherwise the provider's own format (see Content-Type)."""
-    import io
-    import wave
+    import struct
     import voice
+    from fastapi.responses import StreamingResponse
     dev = _device(request)
     if not dev:
         return _no_device()
@@ -2871,17 +2871,19 @@ async def device_audio(message_id: int, request: Request):
     args = (text, spec.get("voice_provider"), spec.get("voice"), spec.get("voice_speed"))
     try:
         if voice.streams(spec.get("voice_provider")):
+            # Passed on as it is made, as /api/voice/speak does: a WAV header whose lengths are left open
+            # (0xFFFFFFFF, read to the end), then each PCM chunk. Waiting for the whole reply to know its
+            # length held the first word back for as long as the whole reply took to make.
             rate, chunks = await asyncio.to_thread(voice.speak_stream, *args)
-            pcm = await asyncio.to_thread(lambda: b"".join(chunks))
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(rate)
-                w.writeframes(pcm)
-            audio, media = buf.getvalue(), "audio/wav"
-        else:
-            audio, media = await asyncio.to_thread(voice.speak, *args)
+            header = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 0xFFFFFFFF, b"WAVE", b"fmt ", 16, 1, 1,
+                                 rate, rate * 2, 2, 16, b"data", 0xFFFFFFFF)
+
+            def wav_stream():
+                yield header
+                yield from chunks
+
+            return StreamingResponse(wav_stream(), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+        audio, media = await asyncio.to_thread(voice.speak, *args)
     except Exception as exc:
         return JSONResponse({"error": f"speech failed: {str(exc)[:200]}"}, status_code=502)
     return Response(audio, media_type=media, headers={"Cache-Control": "no-store"})
