@@ -768,6 +768,8 @@ class Runner:
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
             spec = self.spec
+            if spec.get("llm_error"):  # e.g. its server has no default model
+                raise RuntimeError(spec["llm_error"])
             if spec["kind"] == "api":
                 reply = self._api_turn(channel)
             else:
@@ -1473,6 +1475,14 @@ class Runner:
         return (final, session), "".join(err)
 
 
+LLM_RESOLVED = ("base_url", "api_format", "api_key", "model", "llm_error")  # from the agent's LLM server
+
+
+def _linked(spec: dict) -> bool:
+    """An API agent whose endpoint comes from Settings > LLMs (linked, or waiting for a server)."""
+    return spec.get("kind") == "api" and bool(spec.get("llm") or spec.get("needs_llm"))
+
+
 def _after_replies(history: list[dict], name: str) -> list[dict]:
     """Move a message sent while `name` was writing a reply (its id is between the reply's
     metadata "seen" and the reply) to just after that reply: the reply never saw it, and the
@@ -1513,7 +1523,9 @@ class AgentManager:
         _effort_path = Path(data_dir) / "effort.json"
         METRICS_PATH = Path(data_dir) / "metrics.jsonl"
         import profiles
+        import llm_servers
         profiles.data_dir = Path(data_dir)
+        llm_servers.data_dir = Path(data_dir)
         self.lock = threading.Lock()
         self.specs: dict[str, dict] = {}
         self.state: dict[str, dict] = {}
@@ -1539,6 +1551,13 @@ class AgentManager:
                 self._write(self.path.with_suffix(".json.bak-before-profiles"),
                             json.loads(self.path.read_text("utf-8")))
                 self.save()
+            # LLM servers (llm_servers.py): API agents link to a server instead of carrying
+            # their own endpoint and key. Move them over once, keeping a copy of the old file.
+            before = json.loads(self.path.read_text("utf-8"))
+            if llm_servers.migrate(self.specs):
+                self._write(self.path.with_suffix(".json.bak-before-llm-servers"), before)
+                self.save()
+        self.refresh_llm()
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text("utf-8"))
 
@@ -1550,11 +1569,53 @@ class AgentManager:
         os.replace(tmp, path)
 
     def save(self):
-        """Settings go to managed_agents.json; each persona goes to the agent's profile folder."""
+        """Settings go to managed_agents.json; each persona goes to the agent's profile folder.
+        A linked API agent's endpoint, key and model come from its LLM server: not saved."""
         import profiles
         for s in self.specs.values():
             profiles.write(s["name"], "persona.md", s.get("persona") or "")
-        self._write(self.path, [{k: v for k, v in s.items() if k != "persona"} for s in self.specs.values()])
+        self._write(self.path, [{k: v for k, v in s.items() if k != "persona"
+                                 and not (_linked(s) and k in LLM_RESOLVED)} for s in self.specs.values()])
+
+    def refresh_llm(self, names=None):
+        """Fill each linked API agent's endpoint, format, key and model from its server (in memory).
+        A link to a server that no longer exists takes the agent offline until it is edited."""
+        import llm_servers
+        changed = False
+        for s in [self.specs[n] for n in (names or list(self.specs)) if n in self.specs]:
+            if not _linked(s):
+                continue
+            for k in LLM_RESOLVED:
+                s.pop(k, None)
+            r = llm_servers.resolve(s)
+            if r.get("llm_error") == "needs an LLM server":
+                s.pop("llm", None)
+                s.pop("llm_model", None)
+                if not s.get("needs_llm") or s.get("enabled", True):
+                    s["needs_llm"], s["enabled"] = True, False
+                    changed = True
+            s.update(r)
+        if changed:
+            self.save()
+
+    def linked(self, server_id: str) -> list[str]:
+        return [n for n, s in self.specs.items() if s.get("llm") == server_id]
+
+    def unlink_llm(self, server_id: str) -> list[str]:
+        """Settings > LLMs > Unlink agents: each goes offline until it is linked to a server again."""
+        names = self.linked(server_id)
+        with self.lock:
+            for n in names:
+                s = self.specs[n]
+                for k in ("llm", "llm_model") + LLM_RESOLVED:
+                    s.pop(k, None)
+                s["needs_llm"], s["enabled"] = True, False
+                s["llm_error"] = "needs an LLM server"
+            if names:
+                self.save()
+        for n in names:
+            self._apply(n)
+        return names
 
     def save_state(self):
         with self.lock:
@@ -1622,8 +1683,11 @@ class AgentManager:
             return f"permissions must be one of {PERMISSIONS}"
         if spec["name"] not in self.specs and self._name_taken(spec["name"]):
             return f"an agent named '{spec['name']}' is already connected; pick another name"
-        if spec["kind"] == "api" and not spec.get("base_url"):
-            return "base_url is required for API agents"
+        if spec["kind"] == "api":
+            import llm_servers
+            if not spec.get("llm") or not llm_servers.get(spec["llm"]):
+                if spec.get("enabled", True) or spec.get("llm"):
+                    return "pick an LLM server for this agent (Settings > LLMs)"
         if spec["kind"] != "api" and not _which(spec.get("command") or spec["kind"]):
             return f"'{spec.get('command') or spec['kind']}' is not installed on this machine"
         return None
@@ -1641,11 +1705,21 @@ class AgentManager:
                 if k in old and k not in spec:
                     spec[k] = old[k]
         spec.setdefault("permissions", "read")
+        if spec.get("kind") == "api":
+            import llm_servers
+            if not spec.get("llm") and spec.get("base_url"):  # endpoint fields (older form): link it
+                llm_servers.migrate({spec["name"]: spec})
+            for k in ("base_url", "api_format", "api_key"):
+                spec.pop(k, None)
+            if spec.get("llm"):
+                spec.pop("needs_llm", None)
+                spec.pop("llm_error", None)
         err = self.validate(spec)
         if err:
             return err
         chans = spec.pop("channels", None)  # membership lives in channel_members.json
         self.specs[spec["name"]] = spec
+        self.refresh_llm([spec["name"]])
         self.save()
         if chans is not None:
             for ch in set(self.members) | set(chans):

@@ -25,7 +25,7 @@ class Memory(unittest.TestCase):
                                          rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         self.mgr = agent_runner.AgentManager(self.hub, tmp.name)
         self.mgr._apply = lambda name: None
-        self.mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "cwd": tmp.name})
+        self.mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "model": "m", "cwd": tmp.name})
 
     def test_notes_are_capped_oldest_first_and_deduplicated(self):
         self.assertEqual(memory.add("q", "  likes\n blue ", 40), "saved to your memory")
@@ -58,7 +58,7 @@ class Memory(unittest.TestCase):
         self.assertNotIn("long-term memory", agent_runner.Runner(self.mgr, "q")._system("general", dynamic=False))
 
     def test_reply_tags_save_and_are_not_posted(self):
-        self.mgr.upsert({"name": "c", "kind": "api", "api_format": "anthropic", "base_url": "http://x/v1"})
+        self.mgr.upsert({"name": "c", "kind": "api", "api_format": "anthropic", "base_url": "http://x/v1", "model": "m"})
         r = agent_runner.Runner(self.mgr, "c")
         self.assertIn("[remember]", r._system("general", dynamic=False))
         r.thread = None
@@ -86,7 +86,7 @@ class Memory(unittest.TestCase):
 
     def test_personas_move_from_the_settings_file_to_profile_folders(self):
         path = self.dir / "managed_agents.json"
-        path.write_text(json.dumps([{"name": "old", "kind": "api", "base_url": "http://x/v1", "persona": "Old soul."}]), "utf-8")
+        path.write_text(json.dumps([{"name": "old", "kind": "api", "base_url": "http://x/v1", "model": "m", "persona": "Old soul."}]), "utf-8")
         mgr = agent_runner.AgentManager(self.hub, str(self.dir))
         self.assertEqual(mgr.specs["old"]["persona"], "Old soul.")
         self.assertEqual(profiles.read("old", "persona.md"), "Old soul.")

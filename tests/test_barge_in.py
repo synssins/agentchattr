@@ -23,7 +23,7 @@ class BargeIn(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         self.mgr = agent_runner.AgentManager(hub, tmp.name)
         self.mgr._apply = lambda name: None
-        self.mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "cwd": tmp.name})
+        self.mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "model": "m", "cwd": tmp.name})
         self.calls = []
 
     def texts(self, msgs):

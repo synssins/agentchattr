@@ -145,7 +145,7 @@ class ChannelMembershipTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name))
         mgr = agent_runner.AgentManager(hub, tmp.name)
-        base = {"kind": "api", "base_url": "http://x/v1", "enabled": False}
+        base = {"kind": "api", "base_url": "http://x/v1", "model": "m", "enabled": False}
         self.assertIsNone(mgr.upsert(dict(base, name="a", api_key="k1")))
         self.assertIsNone(mgr.upsert(dict(base, name="b", channels=["irc-work"], copy_key_from="a")))
         self.assertTrue(mgr.in_channel("a", "general"))           # everyone is in #general
@@ -168,7 +168,7 @@ class SpawnTest(unittest.TestCase):
         hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store)
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None  # don't start runner threads in this test
-        self.assertIsNone(mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "api_key": "k"}))
+        self.assertIsNone(mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "model": "m", "api_key": "k"}))
         store.add("alice", "old history")
         note = mgr.spawn("@qwen", "irc-work")
         self.assertIn("Spawned @qwen-2", note)
@@ -193,7 +193,7 @@ class PersonaTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         self.mgr = agent_runner.AgentManager(hub, tmp.name)
         self.mgr._apply = lambda name: None
-        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "persona": "Grumpy QA."})
+        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "model": "m", "persona": "Grumpy QA."})
 
     def test_agent_sets_persona_from_reply(self):
         r = agent_runner.Runner(self.mgr, "qwen")
@@ -226,7 +226,7 @@ class TurnTakingTest(unittest.TestCase):
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
         for n in ("slow", "fast"):
-            mgr.upsert({"name": n, "kind": "api", "base_url": "http://x/v1"})
+            mgr.upsert({"name": n, "kind": "api", "base_url": "http://x/v1", "model": "m"})
         done = {}
 
         def make(name, delay):
@@ -256,9 +256,9 @@ class RenameTest(unittest.TestCase):
                                     room_settings={"username": "alice"},
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
-        mgr.upsert({"name": "agy-2", "kind": "api", "base_url": "http://x/v1", "persona": "P",
+        mgr.upsert({"name": "agy-2", "kind": "api", "base_url": "http://x/v1", "model": "m", "persona": "P",
                     "channels": ["sonorium"]})
-        mgr.upsert({"name": "claudecode-2", "kind": "api", "base_url": "http://x/v1"})
+        mgr.upsert({"name": "claudecode-2", "kind": "api", "base_url": "http://x/v1", "model": "m"})
         try:
             r = mgr.runners["agy-2"]
             r._api_turn = lambda ch: "Call me Marcus.\n[rename]Marcus[/rename]"
@@ -273,7 +273,7 @@ class RenameTest(unittest.TestCase):
             self.assertEqual((posted[-1]["sender"], posted[-1]["text"]), ("marcus", "Call me Marcus."))
             self.assertIn("taken", mgr.rename("claudecode-2", "marcus"))   # no duplicates
             self.assertIn("taken", mgr.rename("claudecode-2", "alice"))
-            mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1", "enabled": False})
+            mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1", "model": "m", "enabled": False})
             self.assertIn("Spawned @agy-3", mgr.spawn("agy", "general"))     # agy-2 family still has marcus
             self.assertTrue(hub.registry.get_instance("marcus"))
         finally:
@@ -289,7 +289,7 @@ class ChannelDeleteTest(unittest.TestCase):
         hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=tmp.name), store=store)
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1"})
+        mgr.upsert({"name": "agy", "kind": "api", "base_url": "http://x/v1", "model": "m"})
         mgr.spawn("agy", "sonorium")                      # agy-2: only in #sonorium
         mgr.spawn("agy", "sonorium")                      # agy-3: also added to #other
         mgr.set_member("agy-3", "other", True)
@@ -326,7 +326,7 @@ class AttachmentTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         self.mgr = agent_runner.AgentManager(hub, tmp.name)
         self.mgr._apply = lambda name: None
-        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1"})
+        self.mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "model": "m"})
         self.store.add("alice", "@qwen what is this?", attachments=[
             {"name": "image.png", "url": "/uploads/abc.png", "kind": "image", "media_type": "image/png"}])
         self.r = agent_runner.Runner(self.mgr, "qwen")
@@ -448,7 +448,7 @@ class ToolLoopTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "permissions": "read",
+        mgr.upsert({"name": "qwen", "kind": "api", "base_url": "http://x/v1", "model": "m", "permissions": "read",
                     "allowed_commands": ["echo"], "cwd": str(self.tmp / "work")})
         store.add("alice", "@qwen run echo")
         seen = []
@@ -476,7 +476,7 @@ class ToolLoopTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "cwd": str(self.tmp / "work")})
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "model": "m", "cwd": str(self.tmp / "work")})
         store.add("alice", "@iris check")
         seen = []
 
@@ -505,8 +505,8 @@ class ToolLoopTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "spawned": True, "context_from": 214})
-        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "persona": "new"})
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "model": "m", "spawned": True, "context_from": 214})
+        mgr.upsert({"name": "iris", "kind": "api", "base_url": "http://x/v1", "model": "m", "persona": "new"})
         self.assertEqual((mgr.specs["iris"]["spawned"], mgr.specs["iris"]["context_from"]), (True, 214))
 
     def test_no_call_when_own_reply_is_last(self):
@@ -517,7 +517,7 @@ class ToolLoopTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "walt", "kind": "api", "base_url": "http://x/v1"})
+        mgr.upsert({"name": "walt", "kind": "api", "base_url": "http://x/v1", "model": "m"})
         store.add("doug", "@walt review")
         store.add("walt", "reviewed")
         orig = agent_runner.call_api_message
@@ -623,7 +623,7 @@ class ToolBudgetTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "max_tool_steps": 2, "cwd": tmp.name})
+        mgr.upsert({"name": "q", "kind": "api", "base_url": "http://x/v1", "model": "m", "max_tool_steps": 2, "cwd": tmp.name})
         store.add("alice", "@q work")
         calls = []
 
@@ -653,7 +653,7 @@ class ResumeAfterRestartTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "lazlo", "kind": "api", "base_url": "http://x/v1"})
+        mgr.upsert({"name": "lazlo", "kind": "api", "base_url": "http://x/v1", "model": "m"})
         store.add("alice", "@lazlo big job", channel="sonorium")
         mgr.set_inflight("lazlo", "sonorium", True)        # what a cut-off turn leaves behind
 
@@ -695,7 +695,7 @@ class AgentAttachTest(unittest.TestCase):
                                     rules=types.SimpleNamespace(active_list=lambda: {"rules": []}))
         mgr = agent_runner.AgentManager(hub, tmp.name)
         mgr._apply = lambda name: None
-        mgr.upsert({"name": "doug", "kind": "api", "base_url": "http://x/v1", "cwd": tmp.name})
+        mgr.upsert({"name": "doug", "kind": "api", "base_url": "http://x/v1", "model": "m", "cwd": tmp.name})
         r = agent_runner.Runner(mgr, "doug")
         r._api_turn = lambda ch: "Here's the render.\n[attach: shot.png]\n[attach: /nope/missing.png]"
         r._turn("general")
