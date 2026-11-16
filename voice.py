@@ -82,14 +82,19 @@ def _get(url: str, key: str = "", timeout: int = 8):
 
 
 def voices() -> dict:
-    """{provider name: [voice names]} (an unreachable provider lists none, with an error)."""
+    """{provider name: {voices, models, clone}} (an unreachable provider lists none, with an error)."""
     out = {}
     for p in load()["providers"]:
         try:
             raw = _get(p["voices_url"], p.get("api_key", "")) if p.get("voices_url") else {"voices": p.get("voices", [])}
             items = raw.get("voices", raw) if isinstance(raw, dict) else raw
             names = [v if isinstance(v, str) else v.get("name") or v.get("id") for v in items]
-            out[p["name"]] = {"voices": sorted(n for n in names if n), "clone": bool(p.get("clone_url"))}
+            out[p["name"]] = {"voices": sorted(n for n in names if n), "clone": bool(p.get("clone_url")), "models": []}
+            try:  # OpenAI-style model list, for the Model dropdown; many speech services have none
+                listed = _get(p["base_url"].rstrip("/") + "/models", p.get("api_key", ""), 4)
+                out[p["name"]]["models"] = sorted(str(m["id"]) for m in listed.get("data", []) if m.get("id"))
+            except Exception:
+                pass
         except Exception as exc:
             out[p["name"]] = {"voices": [], "clone": bool(p.get("clone_url")), "error": str(exc)[:160]}
     return out
