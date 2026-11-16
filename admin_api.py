@@ -482,6 +482,70 @@ def _kv(text) -> dict:
     return out
 
 
+def _llm_agents():
+    return getattr(hub, "agent_manager", None)
+
+
+@router.get("/api/admin/llms")
+async def llm_list():
+    """Settings > LLMs: stored servers plus read-only config.toml ones. Keys never leave."""
+    import llm_servers
+    mgr = _llm_agents()
+    return [dict(llm_servers.public(s), agents=mgr.linked(s["id"]) if mgr else [])
+            for s in llm_servers.load() + llm_servers.config_entries()]
+
+
+@router.post("/api/admin/llms")
+async def llm_upsert(request: Request):
+    import secrets as _secrets
+    import llm_servers
+    body = await request.json()
+    sid = str(body.get("id") or "") or "srv-" + _secrets.token_hex(4)
+    err = llm_servers.upsert(dict(body, id=sid))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    mgr = _llm_agents()
+    if mgr:
+        mgr.refresh_llm(mgr.linked(sid))  # a new default reaches agents on "Default" now
+    return {"ok": True, "id": sid}
+
+
+@router.post("/api/admin/llms/{sid}/test")
+async def llm_test(sid: str):
+    """List the server's models; a server with exactly one model gets it as its default."""
+    import agent_runner
+    import llm_servers
+    s = llm_servers.get(sid)
+    if not s:
+        return JSONResponse({"error": "no such server"}, status_code=404)
+    try:
+        models = await asyncio.to_thread(agent_runner.list_models, s["base_url"], s.get("api_key", ""),
+                                         s.get("api_format", "openai"))
+    except Exception as exc:
+        return JSONResponse({"error": f"could not list models: {str(exc)[:200]}"}, status_code=502)
+    llm_servers.note_models(sid, models)
+    mgr = _llm_agents()
+    if mgr:
+        mgr.refresh_llm(mgr.linked(sid))
+    return {"models": models, "default_model": (llm_servers.get(sid) or {}).get("default_model", "")}
+
+
+@router.post("/api/admin/llms/{sid}/unlink")
+async def llm_unlink(sid: str):
+    mgr = _llm_agents()
+    return {"unlinked": await asyncio.to_thread(mgr.unlink_llm, sid) if mgr else []}
+
+
+@router.delete("/api/admin/llms/{sid}")
+async def llm_delete(sid: str):
+    import llm_servers
+    mgr = _llm_agents()
+    err = llm_servers.remove(sid, mgr.linked(sid) if mgr else [])
+    if err:
+        return JSONResponse({"error": err}, status_code=400 if sid.startswith("cfg-") else 409)
+    return {"ok": True}
+
+
 @router.get("/api/admin/mcp")
 async def mcp_list():
     return [_mcp_public(s) for s in _load("mcp_servers.json", [])]
