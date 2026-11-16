@@ -409,6 +409,9 @@ class ToolLoopTest(unittest.TestCase):
 
     def test_permission_levels(self):
         names = lambda perm, allowed=(): [t["function"]["name"] for t in self.at.tool_specs(perm, list(allowed))]
+        p = unittest.mock.patch.object(self.at, "_searxng_url", lambda: "")  # web_search depends on this machine's config
+        p.start()
+        self.addCleanup(p.stop)
         self.assertEqual(names("read"), ["load_skill", "read_file", "list_dir", "artifact_read", "artifact_update", "rulebook", "react"])
         self.assertIn("write_file", names("edit"))
         self.assertNotIn("run_command", names("edit"))
