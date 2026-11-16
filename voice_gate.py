@@ -7,8 +7,12 @@
   4. Model missing, failing or slow: ignored (fail closed).
 
 A conversation stays open for WINDOW seconds after the owner's last accepted sentence, the
-agent's last reply, or the end of its spoken playback. Kept in memory only. Rejected speech
-is never stored or logged.
+agent's last reply, or the end of its spoken playback. Conversations are per source (the
+browser, or each always-listening device), so one room's Dot doesn't continue another's.
+Before anything else, a sentence that repeats what was just spoken to that source is the
+device hearing its own speaker (echo), and the same sentence from a second device within
+DEDUPE seconds was heard twice (duplicate): both are dropped. Kept in memory only.
+Rejected speech is never stored or logged.
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ import time
 from collections import deque
 
 WINDOW = 30.0
+ECHO_SECONDS = 60.0   # how long text spoken to a source can come back through its mic
+DEDUPE = 4.0          # two devices hearing one sentence
 STOP_RE = re.compile(r"^(stop|wait|cancel|never ?mind|hold on|shut up)[.!]*$", re.I)
 PROMPT = (
     "You gate a voice assistant room. The microphone hears everything said in a room. Decide whether "
@@ -29,54 +35,92 @@ PROMPT = (
     'name can still be TO it. Reply with JSON only: {"to": "<handle>"} or {"to": null}.')
 
 _lock = threading.Lock()
-_conv: dict[str, dict] = {}   # channel -> {"agent", "until", "since", "turns": deque}
+_conv: dict[tuple[str, str], dict] = {}   # (channel, source) -> {"agent", "until", "since", "turns"}
+_spoken: dict[tuple[str, str], deque] = {}  # (channel, source) -> (ts, words) spoken to it
+_recent: dict[str, deque] = {}              # channel -> (ts, normalised text, source) just heard
 
 
 def reset():
     with _lock:
         _conv.clear()
+        _spoken.clear()
+        _recent.clear()
 
 
-def open_for(channel: str, now: float | None = None) -> str | None:
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+
+def open_for(channel: str, now: float | None = None, source: str = "browser") -> str | None:
     now = time.time() if now is None else now
     with _lock:
-        c = _conv.get(channel)
+        c = _conv.get((channel, source))
         if c and c["until"] > now:
             return c["agent"]
-        _conv.pop(channel, None)
+        _conv.pop((channel, source), None)
         return None
 
 
 def saw_reply(channel: str, agent: str, text: str, ts: float):
-    """An agent's reply in a channel: extends its open voice conversation (and gives follow-ups context)."""
+    """An agent's reply in a channel: extends its open voice conversations (and gives follow-ups context)."""
     with _lock:
-        c = _conv.get(channel)
-        if c and c["agent"] == agent and ts >= c["since"]:
-            c["turns"].append(("assistant", text[-300:]))
-            c["until"] = max(c["until"], ts + WINDOW)
+        for (ch, _), c in _conv.items():
+            if ch == channel and c["agent"] == agent and ts >= c["since"]:
+                c["turns"].append(("assistant", text[-300:]))
+                c["until"] = max(c["until"], ts + WINDOW)
 
 
-def played(channel: str, now: float | None = None):
-    """The browser finished speaking a reply: the follow-up window starts now."""
+def played(channel: str, now: float | None = None, source: str = "browser"):
+    """A reply finished playing on that source: the follow-up window starts now."""
     now = time.time() if now is None else now
     with _lock:
-        c = _conv.get(channel)
+        c = _conv.get((channel, source))
         if c and c["until"] > now - WINDOW:
             c["until"] = max(c["until"], now + WINDOW)
 
 
-def _accept(channel: str, agent: str, text: str, now: float):
+def spoke(channel: str, source: str, text: str, now: float | None = None):
+    """Text about to be played on that source: its mic may hear it back (echo)."""
+    now = time.time() if now is None else now
     with _lock:
-        c = _conv.get(channel)
+        q = _spoken.setdefault((channel, source), deque(maxlen=20))
+        q.append((now, set(_words(text))))
+
+
+def _is_echo(channel: str, source: str, text: str, now: float) -> bool:
+    words = _words(text)
+    if len(words) < 4:
+        return False
+    with _lock:
+        for ts, spoken in _spoken.get((channel, source), ()):
+            if now - ts <= ECHO_SECONDS and sum(w in spoken for w in words) / len(words) >= 0.6:
+                return True
+    return False
+
+
+def _is_duplicate(channel: str, source: str, text: str, now: float) -> bool:
+    norm = " ".join(_words(text))
+    with _lock:
+        q = _recent.setdefault(channel, deque(maxlen=50))
+        while q and now - q[0][0] > DEDUPE:
+            q.popleft()
+        dup = any(n == norm and src != source for _, n, src in q)
+        q.append((now, norm, source))
+    return dup and bool(norm)
+
+
+def _accept(channel: str, agent: str, text: str, now: float, source: str):
+    with _lock:
+        c = _conv.get((channel, source))
         if not c or c["agent"] != agent:
-            c = _conv[channel] = {"agent": agent, "since": now, "turns": deque(maxlen=6)}
+            c = _conv[(channel, source)] = {"agent": agent, "since": now, "turns": deque(maxlen=6)}
         c["turns"].append(("user", text[-300:]))
         c["until"] = now + WINDOW
 
 
-def _turns(channel: str) -> list[tuple[str, str]]:
+def _turns(channel: str, source: str) -> list[tuple[str, str]]:
     with _lock:
-        c = _conv.get(channel)
+        c = _conv.get((channel, source))
         return list(c["turns"]) if c else []
 
 
@@ -98,18 +142,23 @@ def _parse(answer: str | None, candidates: list[str]) -> str | None | bool:
     return to if to in candidates else None
 
 
-def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float | None = None) -> dict:
+def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float | None = None,
+           source: str = "browser") -> dict:
     """text: transcript. here: {handle: label} of agents in the channel. ask(prompt) -> model
     answer or None on failure. named(text, here) -> handles named in the text.
     -> {"accepted", "to", "reason", "open"}."""
     now = time.time() if now is None else now
     text = text.strip()
-    current = open_for(channel, now)
+    current = open_for(channel, now, source)
     if current and current not in here:
         current = None
 
     def out(accepted, to, reason):
-        return {"accepted": accepted, "to": to, "reason": reason, "open": open_for(channel, now)}
+        return {"accepted": accepted, "to": to, "reason": reason, "open": open_for(channel, now, source)}
+    if _is_echo(channel, source, text, now):
+        return out(False, None, "echo")
+    if _is_duplicate(channel, source, text, now):
+        return out(False, None, "duplicate")
     if not here:
         return out(False, None, "no_agents")
     if current and STOP_RE.match(text):
@@ -118,7 +167,7 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
     if not names and not current:
         return out(False, None, "no_name")
     candidates = names or [current]
-    convo = "\n".join(f"{'owner' if r == 'user' else current}: {t}" for r, t in _turns(channel)) if current else ""
+    convo = "\n".join(f"{'owner' if r == 'user' else current}: {t}" for r, t in _turns(channel, source)) if current else ""
     who = "\n".join(f"@{n}" + (f" (name: {here[n]})" if here[n] and here[n] != n else "") for n in candidates)
     prompt = (f"Candidate agents:\n{who}\n\nOpen conversation: "
               + (f"with @{current}\n{convo or '(no turns yet)'}" if current else "none")
@@ -128,5 +177,5 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
         return out(False, None, "decision_unavailable")
     if to is None:
         return out(False, None, "about" if names else "not_for_agent")
-    _accept(channel, to, text, now)
+    _accept(channel, to, text, now, source)
     return out(True, to, "named" if to in names else "followup")

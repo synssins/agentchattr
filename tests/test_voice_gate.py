@@ -89,6 +89,37 @@ class Gate(unittest.TestCase):
     def test_no_agents_in_channel(self):
         self.assertEqual(self.decide("Jessica, hi", self.ask_to("jessica"), here={})["reason"], "no_agents")
 
+    def test_conversations_are_per_source(self):
+        g.decide("Jessica, lights off.", "ch", HERE, self.ask_to("jessica"), responder.named, now=1000, source="office")
+        self.assertIsNone(g.open_for("ch", now=1001, source="kitchen"))
+        self.assertEqual(g.open_for("ch", now=1001, source="office"), "jessica")
+        r = g.decide("And the fan.", "ch", HERE, self.ask_to("jessica"), responder.named, now=1005, source="kitchen")
+        self.assertEqual(r["reason"], "no_name")
+
+    def test_same_sentence_from_two_devices_is_handled_once(self):
+        d = lambda src, t: g.decide("Jessica, lights off.", "ch", HERE, self.ask_to("jessica"), responder.named,
+                                    now=t, source=src)
+        self.assertTrue(d("office", 1000)["accepted"])
+        self.assertEqual(d("kitchen", 1002.5)["reason"], "duplicate")
+        self.assertNotEqual(d("kitchen", 1005)["reason"], "duplicate")
+
+    def test_echo_of_spoken_reply_is_rejected(self):
+        g.spoke("ch", "office", "Dimmed the office lights to forty percent.", 1000)
+        n = len(self.asked)
+        r = g.decide("dimmed the office lights to forty percent jessica", "ch", HERE, self.ask_to("jessica"),
+                     responder.named, now=1003, source="office")
+        self.assertEqual(r["reason"], "echo")
+        self.assertEqual(len(self.asked), n)
+        r = g.decide("dimmed the office lights to forty percent jessica", "ch", HERE, self.ask_to("jessica"),
+                     responder.named, now=1003, source="kitchen")
+        self.assertNotEqual(r["reason"], "echo")
+
+    def test_echo_memory_expires(self):
+        g.spoke("ch", "office", "Dimmed the office lights to forty percent.", 1000)
+        r = g.decide("dimmed the office lights to forty percent jessica", "ch", HERE, self.ask_to("jessica"),
+                     responder.named, now=1070, source="office")
+        self.assertNotEqual(r["reason"], "echo")
+
 
 if __name__ == "__main__":
     unittest.main()
