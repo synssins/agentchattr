@@ -127,6 +127,12 @@ def _accept(channel: str, agent: str, text: str, now: float, source: str):
         c["until"] = now + WINDOW
 
 
+def accept(channel: str, agent: str, text: str, now: float | None = None, source: str = "browser"):
+    """Record text as said to agent without deciding, for a turn the device opened itself (its wake word
+    or a command word): the follow-up window and the turns for the next decision start from it."""
+    _accept(channel, agent, text, time.time() if now is None else now, source)
+
+
 def _turns(channel: str, source: str) -> list[tuple[str, str]]:
     with _lock:
         c = _conv.get((channel, source))

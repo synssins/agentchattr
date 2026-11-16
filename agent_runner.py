@@ -932,6 +932,11 @@ class Runner:
             return NO_REPLY
         history = _after_replies(history, self.name)
         self._seen_id = max(others, default=None)
+        # The newest message can ask for its own thinking level (metadata.effort): a voice device's
+        # direct turn asks for none.
+        last = next((m for m in reversed(history) if m["sender"] != self.name), None)
+        want = ((last or {}).get("metadata") or {}).get("effort")
+        self._turn_effort = want if want in AGENT_EFFORTS else None
         inline = set()  # ids of the newest messages whose images go inline
         for m in reversed(history):
             if len(inline) >= MAX_IMAGES:
@@ -1106,6 +1111,10 @@ class Runner:
         self.m.save_state()
         return f"@{self.name} cleared its memory of #{channel}."
 
+    def _effort(self, channel: str) -> str | None:
+        """This turn's thinking level: the one its message asked for, else the agent's or the channel's."""
+        return getattr(self, "_turn_effort", None) or effort_level(self.spec, channel)
+
     def _tool_loop(self, channel: str, msgs: list[dict], images_inline: bool = False) -> str:
         """Let an API agent call tools (agent_tools) until it answers in text."""
         import admin_api
@@ -1163,7 +1172,7 @@ class Runner:
                 reply = call_api_message(spec, system, msgs, tools,
                                          "required" if step == 0 and spec.get("require_tool") else None,
                                          on_text=on_text,
-                                         effort=api_effort(effort_level(spec, channel)),
+                                         effort=api_effort(self._effort(channel)),
                                          on_reason=on_reason)
             except _BargeIn:
                 log.info("%s: new message mid-reply in #%s; reading it", self.name, channel)
@@ -1237,7 +1246,7 @@ class Runner:
             f"(You have used all {steps} tool steps for this turn. Don't call tools. Post what you did, "
             "what you found, and exactly what is left, so the work can continue next turn.)")})
         return with_files(call_api_message(spec, system, msgs, None,
-                                           effort=api_effort(effort_level(spec, channel))).get("content") or
+                                           effort=api_effort(self._effort(channel))).get("content") or
                           f"(stopped after {steps} tool steps without a summary)")
 
     def _cli_turn(self, channel: str) -> str:

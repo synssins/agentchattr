@@ -82,6 +82,17 @@ class DeviceRoutes(unittest.TestCase):
         self.assertEqual(m["sender"], "alice")
         self.assertEqual(m["metadata"], {"voice": True, "device": "office-dot", "to": "margie"})
 
+    def test_listen_direct_skips_the_name_and_thinking(self):
+        self.transcripts.append("lights on")
+        r = self.c.post("/api/device/listen?direct=1", content=wav(),
+                        headers={**self.auth, "Content-Type": "audio/wav"}).json()
+        self.assertEqual((r["accepted"], r["to"], r["reason"]), (True, "margie", "direct"))
+        self.assertEqual(self.asked, [])  # no voice check
+        m = self.store.get_recent(1, channel="home")[-1]
+        self.assertEqual(m["text"], "@margie lights on")
+        self.assertEqual(m["metadata"]["effort"], "none")
+        self.assertEqual(voice_gate.open_for("home", source="office-dot"), "margie")
+
     def test_listen_text_body(self):
         r = self.c.post("/api/device/listen", json={"text": "Margie, what time is it?"}, headers=self.auth).json()
         self.assertTrue(r["accepted"])

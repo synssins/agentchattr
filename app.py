@@ -2784,6 +2784,7 @@ async def device_listen(request: Request):
     dev = _device(request)
     if not dev:
         return _no_device()
+    direct = request.query_params.get("direct") == "1"
     if "json" in request.headers.get("content-type", ""):
         try:
             text = str((await request.json()).get("text") or "")
@@ -2814,10 +2815,35 @@ async def device_listen(request: Request):
     if not text or _re.fullmatch(r"[\[(].*[\])]", text):  # [BLANK_AUDIO], (noise)
         return {"accepted": False, "to": None, "reason": "empty", "open": None}
     channel = dev["channel"]
+    if direct:
+        r = _device_direct(text, dev)
+        log.info("device %s: %s", dev["name"], r["reason"])
+        return r
     r = await _voice_decide(text, channel, room_settings.get("username", "user"), source=dev["name"],
                             metadata={"device": dev["name"]})
     log.info("device %s: %s", dev["name"], r["reason"])
     return r
+
+
+def _device_direct(text: str, dev: dict) -> dict:
+    """A turn the device opened itself (?direct=1: its wake word or a command word). The device already
+    knows it was spoken to, so the name check is skipped: it goes to the agent the device's conversation
+    is with, else the channel's first agent, with thinking off (metadata.effort), since a spoken command
+    wants an answer now."""
+    import voice_gate
+    channel = dev["channel"]
+    here = _voice_here(channel)
+    agent = voice_gate.open_for(channel, source=dev["name"])
+    if agent not in here:
+        agent = min(here, default=None)
+    if not agent:
+        return {"accepted": False, "to": None, "reason": "no_agents", "open": None}
+    voice_gate.accept(channel, agent, text, source=dev["name"])
+    out = text if _re.search(r"(?<![\w.])@[\w-]+", text) else f"@{agent} {text}"
+    msg = store.add(room_settings.get("username", "user"), out, channel=channel,
+                    metadata={"voice": True, "device": dev["name"], "to": agent, "effort": "none"})
+    return {"accepted": True, "to": agent, "reason": "direct", "open": voice_gate.open_for(channel, source=dev["name"]),
+            "message_id": msg["id"]}
 
 
 async def device_reply(request: Request):
