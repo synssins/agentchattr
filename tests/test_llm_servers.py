@@ -126,6 +126,19 @@ class LlmServers(unittest.TestCase):
         mode = stat.S_IMODE(os.stat(llm_servers.data_dir / "llm_servers.json").st_mode)
         self.assertEqual(mode, 0o600)
 
+    def test_migrate_gives_duplicate_names_a_number(self):
+        specs = {"a": {"name": "a", "kind": "api", "base_url": "https://openrouter.ai/api/v1", "api_key": "k1", "model": "x"},
+                 "b": {"name": "b", "kind": "api", "base_url": "https://openrouter.ai/api/v1", "api_key": "k2", "model": "y"}}
+        llm_servers.migrate(specs)
+        self.assertEqual(sorted(s["name"] for s in llm_servers.load()), ["OpenRouter", "OpenRouter 2"])
+
+    def test_new_host_with_blank_key_drops_the_old_key(self):
+        llm_servers.upsert({"id": "srv-1", "name": "S", "base_url": "https://a.example/v1", "api_key": "secret"})
+        llm_servers.upsert({"id": "srv-1", "base_url": "https://a.example/api/v1", "api_key": ""})  # same host: kept
+        self.assertEqual(llm_servers.get("srv-1").get("api_key"), "secret")
+        llm_servers.upsert({"id": "srv-1", "base_url": "https://b.example/v1", "api_key": ""})
+        self.assertNotIn("api_key", llm_servers.get("srv-1"))
+
 
 if __name__ == "__main__":
     unittest.main()

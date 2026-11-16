@@ -575,7 +575,7 @@
                 el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
                 el('label', { class: 'agents-field' }, el('span', { text: 'Base URL' }), baseUrl),
                 el('label', { class: 'agents-field' }, el('span', { text: 'API format' }), format)),
-            el('label', { class: 'agents-field' }, el('span', { text: 'API key (write-only)' }), key),
+            el('label', { class: 'agents-field' }, el('span', { text: 'API key (write-only; changing the host without a new key clears the stored one)' }), key),
             el('label', { class: 'agents-field' }, el('span', { text: 'Default model' }), def, defNote),
             el('div', { class: 'agents-actions' },
                 e.id ? el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('llms') }) : null,
@@ -584,7 +584,8 @@
             ev.preventDefault();
             const body = { id: e.id || '', name: name.value.trim(), base_url: baseUrl.value.trim(),
                 api_format: format.value, api_key: key.value };
-            if (e.id) body.default_model = def.value;  // new servers: picked after the first save
+            // only when changed: an untouched default keeps following a one-model server
+            if (e.id && def.value !== (e.default_model || '')) body.default_model = def.value;
             try { await api('POST', '/api/admin/llms', body); show('llms'); }
             catch (err) { alert(err.message); }
         });

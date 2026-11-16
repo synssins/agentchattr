@@ -570,8 +570,6 @@ function handleServerEvent(event) {
         updateTodoState(d.id, d.status);
     } else if (event.type === 'status') {
         updateStatus(event.data);
-    } else if (event.type === 'typing') {
-        updateTyping(event.agent, event.active);
     } else if (event.type === 'settings') {
         applySettings(event.data);
     } else if (event.type === 'delete') {
@@ -2031,9 +2029,8 @@ function updateStatus(data) {
         pill.classList.remove('available', 'working', 'offline');
         // Pending pills keep their pending animation (set in buildStatusPills)
         if (!pill.classList.contains('pending')) {
-            if (info.busy && info.available) {
-                pill.classList.add('working');
-            } else if (info.available) {
+            // Working agents show as a live card in their channel's chat, not up here
+            if (info.available) {
                 pill.classList.add('available');
             } else {
                 pill.classList.add('offline');
@@ -2051,16 +2048,6 @@ function updateStatus(data) {
     }
 }
 
-function updateTyping(agent, active) {
-    const indicator = document.getElementById('typing-indicator');
-    if (active) {
-        indicator.querySelector('.typing-name').textContent = agent;
-        indicator.classList.remove('hidden');
-        if (autoScroll) scrollToBottom();
-    } else {
-        indicator.classList.add('hidden');
-    }
-}
 
 // --- Settings ---
 

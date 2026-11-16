@@ -2594,19 +2594,6 @@ body.channels-in-sidebar #channel-bar {
     background: #000;
 }
 
-/* --- Typing indicator --- */
-
-#typing-indicator {
-    padding: 6px 10px;
-    color: var(--text-dim);
-    font-size: 12px;
-    font-style: italic;
-}
-
-#typing-indicator.hidden { display: none; }
-
-.typing-name { font-weight: 600; }
-
 /* --- Scroll anchor --- */
 
 #scroll-anchor {

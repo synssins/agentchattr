@@ -217,7 +217,7 @@
         const server = el('select', { 'aria-label': 'LLM server' });
         const model = el('select', { 'aria-label': 'Model' });
         const serverHelp = el('small');
-        let servers = [];
+        let servers = [], serversLoaded = false;
         async function loadServerModels() {
             const s = servers.find(x => x.id === server.value);
             const keep = model.value || a.llm_model || '';
@@ -236,6 +236,7 @@
         server.addEventListener('change', () => { model.value = ''; loadServerModels(); });
         api('GET', '/api/admin/llms').then(list => {
             servers = list;
+            serversLoaded = true;
             server.append(el('option', { value: '', text: 'Pick a server' }));
             list.filter(x => !x.readonly).forEach(x => server.append(el('option', { value: x.id, text: x.name })));
             server.value = a.llm || '';
@@ -373,7 +374,8 @@
                 memory_size: memSize.value === '' ? null : Number(memSize.value),
             };
             if (kind.value === 'api') {
-                Object.assign(spec, { llm: server.value, llm_model: model.value,
+                // until the server list has loaded, keep the stored link rather than sending a blank one
+                Object.assign(spec, { llm: serversLoaded ? server.value : (a.llm || ''), llm_model: serversLoaded ? model.value : (a.llm_model || ''),
                     temperature: temp.value === '' ? null : Number(temp.value),
                     context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null,
                     max_tool_steps: Number(steps.value) || null, require_tool: requireTool.checked,

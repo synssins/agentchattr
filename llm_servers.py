@@ -13,10 +13,12 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
 import urllib.parse
 from pathlib import Path
 
 data_dir = Path("./data")   # set by AgentManager
+_lock = threading.RLock()   # every read-modify-write of the file
 FILE = "llm_servers.json"
 FORMATS = ("openai", "anthropic")
 # The agent form's old provider presets (static/agents-admin.js): names for migrated servers
@@ -89,7 +91,12 @@ def public(server: dict) -> dict:
 
 
 def upsert(entry: dict) -> str | None:
-    """Add or edit a server; a blank api_key keeps the stored one. -> error text or None."""
+    """Add or edit a server; a blank api_key keeps the stored one (unless the host changed). -> error or None."""
+    with _lock:
+        return _upsert(entry)
+
+
+def _upsert(entry: dict) -> str | None:
     sid = entry.get("id") or ""
     if sid.startswith("cfg-"):
         return "servers from config.toml are read-only; edit the config file"
@@ -104,6 +111,8 @@ def upsert(entry: dict) -> str | None:
             new[k] = str(entry[k] or "").strip()
     if entry.get("api_key"):
         new["api_key"] = str(entry["api_key"]).strip()
+    elif old and _host(old.get("base_url", "")) != _host(new.get("base_url", "")):
+        new.pop("api_key", None)  # never send the old host's key to a new host
     if "default_model" in entry:
         new["default_auto"] = False  # the owner's choice: no longer follows a one-model server
     new.setdefault("api_format", "openai")
@@ -121,6 +130,11 @@ def upsert(entry: dict) -> str | None:
 
 
 def remove(server_id: str, linked: list[str]) -> str | None:
+    with _lock:
+        return _remove(server_id, linked)
+
+
+def _remove(server_id: str, linked: list[str]) -> str | None:
     if server_id.startswith("cfg-"):
         return "servers from config.toml are read-only; edit the config file"
     if linked:
@@ -134,6 +148,11 @@ def remove(server_id: str, linked: list[str]) -> str | None:
 
 def note_models(server_id: str, models: list[str]):
     """After listing a server's models: one model and no default of the owner's -> that's the default."""
+    with _lock:
+        _note_models(server_id, models)
+
+
+def _note_models(server_id: str, models: list[str]):
     try:
         servers = load()
     except Unreadable:
@@ -164,6 +183,11 @@ def resolve(spec: dict) -> dict:
 def migrate(specs: dict[str, dict]) -> bool:
     """One server per distinct (base_url, api_format, api_key) of API agents without "llm";
     each agent is linked with its current model pinned. -> True when anything changed."""
+    with _lock:
+        return _migrate(specs)
+
+
+def _migrate(specs: dict[str, dict]) -> bool:
     todo = [s for s in specs.values() if s.get("kind") == "api" and not s.get("llm") and s.get("base_url")]
     if not todo:
         return False
@@ -176,7 +200,11 @@ def migrate(specs: dict[str, dict]) -> bool:
         srv = next((s for s in servers if (s["base_url"].rstrip("/"), s.get("api_format", "openai"),
                                            s.get("api_key", "")) == key), None)
         if not srv:
-            srv = {"id": "srv-" + secrets.token_hex(4), "name": PRESETS.get(key[0]) or _host(key[0]),
+            base = PRESETS.get(key[0]) or _host(key[0])
+            taken, name, n = {s.get("name") for s in servers}, base, 2
+            while name in taken:  # two keys for one provider: "OpenRouter", "OpenRouter 2"
+                name, n = f"{base} {n}", n + 1
+            srv = {"id": "srv-" + secrets.token_hex(4), "name": name,
                    "base_url": spec["base_url"], "api_format": key[1], "default_model": ""}
             if key[2]:
                 srv["api_key"] = key[2]

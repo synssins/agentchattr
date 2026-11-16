@@ -1071,17 +1071,6 @@ async def broadcast_status():
     ws_clients.difference_update(dead)
 
 
-async def broadcast_typing(agent_name: str, is_typing: bool):
-    data = json.dumps({"type": "typing", "agent": agent_name, "active": is_typing})
-    dead = set()
-    for client in list(ws_clients):
-        try:
-            await client.send_text(data)
-        except Exception:
-            dead.add(client)
-    ws_clients.difference_update(dead)
-
-
 async def broadcast_clear(channel: str | None = None):
     payload = {"type": "clear"}
     if channel:
@@ -2870,20 +2859,6 @@ async def channel_members(request: Request):
     store.add("system", f"@{name} {verb} #{channel}", msg_type="system", channel=channel)
     await broadcast_status()
     return JSONResponse({"ok": True, "channels": agent_manager.channels_of(name)})
-
-
-@app.post("/api/managed-agents/models")
-async def managed_agents_models(request: Request):
-    """List a provider's models for the picker. Blank api_key = the named agent's stored key."""
-    import agent_runner
-    body = await request.json()
-    key = body.get("api_key") or agent_manager.specs.get(body.get("name", ""), {}).get("api_key", "")
-    try:
-        models = await asyncio.to_thread(agent_runner.list_models, body.get("base_url", ""), key,
-                                         body.get("api_format", "openai"))
-    except Exception as exc:
-        return JSONResponse({"error": f"could not list models: {exc}"}, status_code=502)
-    return JSONResponse(models)
 
 
 @app.post("/api/register")

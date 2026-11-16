@@ -284,6 +284,14 @@ function _sidebarConfirmDelete(name, row, label) {
 function switchChannel(name) {
     if (name === window.activeChannel) return;
     const prevChannel = window.activeChannel;
+    // Each channel keeps its own unsent text: a draft never follows you to another channel
+    const box = document.getElementById('input');
+    if (box) {
+        const drafts = window._channelDrafts || (window._channelDrafts = {});
+        drafts[prevChannel] = box.value;
+        box.value = drafts[name] || '';
+        box.dispatchEvent(new Event('input', { bubbles: true }));  // resize, slash/mention menus
+    }
     window._setActiveChannel(name);
     // Swap the sticky @-mention toggles to this channel's remembered set
     if (window._onChannelSwitchMentions) window._onChannelSwitchMentions(prevChannel, name);
