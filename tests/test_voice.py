@@ -49,7 +49,7 @@ class Voice(unittest.TestCase):
 
     def test_speakable_drops_code_links_and_markup(self):
         t = voice.speakable("Done **now**:\n```py\nx = 1\n```\nSee https://a.b/c and @bob [docs](http://d) [artifact:abc123]")
-        self.assertEqual(t, "Done now : (code block) See (link) and bob docs (artifact)")
+        self.assertEqual(t, "Done now : (code block) See and bob (artifact)")  # links are not read aloud
 
     def test_transcribe_streams_pcm_to_wyoming(self):
         port, got = fake_wyoming("hello there")

@@ -109,8 +109,8 @@ def speakable(text: str) -> str:
     t = re.sub(r"\[artifact:[^\]]+\]", " (artifact) ", t)
     t = re.sub(r"\[attach(?:ed)?[^\]]*\]", " ", t)
     t = re.sub(r"`([^`]*)`", r"\1", t)
-    t = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", t)          # [label](url) -> label
-    t = re.sub(r"https?://\S+", " (link) ", t)
+    t = re.sub(r"!?\[[^\]]*\]\([^)]*\)", " ", t)              # links and images are for the screen only
+    t = re.sub(r"https?://\S+", " ", t)
     t = re.sub(r"(^|\s)@([\w-]+)", r"\1\2", t)                 # @name -> name
     t = re.sub(r"[*_#>|~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
