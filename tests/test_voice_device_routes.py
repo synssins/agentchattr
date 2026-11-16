@@ -93,6 +93,15 @@ class DeviceRoutes(unittest.TestCase):
         self.assertEqual(m["metadata"]["effort"], "none")
         self.assertEqual(voice_gate.open_for("home", source="office-dot"), "margie")
 
+    def test_direct_goes_to_the_agent_with_a_voice(self):
+        reg = types.SimpleNamespace(get_active_names=lambda: ["claudecode", "margie"], get_instance=lambda n: {"label": n})
+        mgr = types.SimpleNamespace(specs={"margie": {"voice_provider": "Chatterbox"}, "claudecode": {}},
+                                    in_channel=lambda n, ch: True)
+        self.stack.enter_context(patch.object(app, "registry", reg))
+        self.stack.enter_context(patch.object(app, "agent_manager", mgr))
+        r = self.c.post("/api/device/listen?direct=1", json={"text": "what time is it"}, headers=self.auth).json()
+        self.assertEqual((r["reason"], r["to"]), ("direct", "margie"))
+
     def test_passphrase_runs_the_held_action_and_is_never_posted(self):
         import mcp_hub
         import passphrase

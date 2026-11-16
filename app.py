@@ -2857,7 +2857,7 @@ async def _passphrase_said(text: str, channel: str, sender: str) -> dict | None:
 def _device_direct(text: str, dev: dict) -> dict:
     """A turn the device opened itself (?direct=1: its wake word or a command word). The device already
     knows it was spoken to, so the name check is skipped: it goes to the agent the device's conversation
-    is with, else the channel's first agent, with thinking off (metadata.effort), since a spoken command
+    is with, else the channel's agent with a voice (else its first), with thinking off (metadata.effort), since a spoken command
     wants an answer now."""
     import voice_gate
     channel = dev["channel"]
@@ -2867,7 +2867,10 @@ def _device_direct(text: str, dev: dict) -> dict:
     if held:
         return held
     if agent not in here:
-        agent = min(here, default=None)
+        # The channel's agent with a voice of its own is the one a speaker is talking to.
+        specs = agent_manager.specs if agent_manager else {}
+        voiced = [n for n in here if (specs.get(n) or {}).get("voice_provider")]
+        agent = min(voiced or here, default=None)
     if not agent:
         return {"accepted": False, "to": None, "reason": "no_agents", "open": None}
     voice_gate.accept(channel, agent, text, source=dev["name"])
