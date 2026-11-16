@@ -300,6 +300,7 @@ function switchChannel(name) {
     filterMessagesByChannel();
     renderChannelTabs();
     if (window.renderMembers) window.renderMembers();  // member list is per channel
+    if (window.refreshWorking) window.refreshWorking();  // the working/Stop bar is per channel too
     Store.set('activeChannel', name);
     document.querySelector('#channel-tabs .channel-tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     // Always land on the newest message, instantly (the timeline's CSS smooth scroll

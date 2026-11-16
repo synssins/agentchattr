@@ -24,6 +24,7 @@ class AgentTrigger:
             name: {
                 "available": is_online(name),
                 "busy": is_active(name),
+                "busy_channel": _busy_channel(mgr, name),  # managed agents: the channel of the running turn
                 "label": info["label"],
                 "color": info["color"],
                 "role": get_role(name),
@@ -85,3 +86,8 @@ class AgentTrigger:
             f.write(json.dumps(entry) + "\n")
 
         log.info("Queued @%s trigger (ch=%s, job=%s): %s", agent_name, channel, job_id, message[:80])
+
+
+def _busy_channel(mgr, name: str) -> str | None:
+    r = mgr.runners.get(name) if mgr else None
+    return getattr(r, "channel", None) if r and getattr(r, "working", False) else None

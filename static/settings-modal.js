@@ -599,8 +599,9 @@
                 .catch(() => { count.textContent = 'unreachable'; });
             let host = x.base_url;
             try { host = new URL(x.base_url).host; } catch (_) { /* keep as typed */ }
-            const agents = (x.agents || []).map(n => '@' + n).join(', ') || '—';
-            const actions = x.readonly ? el('small', { text: 'from config.toml' }) : el('div', { class: 'agents-inline' },
+            const names = (x.agents || []).map(n => '@' + n).join(', ');
+            const agents = el('span', { text: names ? String(x.agents.length) : '—', title: names });
+            const actions = x.readonly ? el('small', { text: 'from config.toml' }) : el('div', { class: 'agents-inline', style: 'flex-wrap: wrap' },
                 el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
                     const p = document.getElementById('settings-panel'); p.textContent = ''; renderLlms(p, x);
                 } }),

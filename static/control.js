@@ -356,7 +356,18 @@ const Control = (() => {
 
     // ---------------- Stop agents ----------------
 
-    let working = [];
+    let working = [], lastStatus = {};
+    // Only agents working in the channel you're in (managed agents report their channel;
+    // others count when they are members of it)
+    const here = ([n, i]) => {
+        const ch = typeof activeChannel === 'string' ? activeChannel : 'general';
+        return i.busy_channel ? i.busy_channel === ch
+            : (typeof agentInActiveChannel !== 'function' || agentInActiveChannel(n));
+    };
+    window.refreshWorking = () => {
+        working = Object.entries(lastStatus).filter(([n, i]) => n !== 'paused' && i && i.busy).filter(here);
+        renderWorking();
+    };
 
     function renderWorking() {
         let bar = document.getElementById('ctl-working');
@@ -385,8 +396,8 @@ const Control = (() => {
     }
 
     Hub.on('status', (ev) => {
-        working = Object.entries(ev.data || {}).filter(([n, i]) => n !== 'paused' && i && i.busy);
-        renderWorking();
+        lastStatus = ev.data || {};
+        window.refreshWorking();
     });
 
     document.addEventListener('click', (e) => {
