@@ -1580,23 +1580,29 @@ class AgentManager:
     def refresh_llm(self, names=None):
         """Fill each linked API agent's endpoint, format, key and model from its server (in memory).
         A link to a server that no longer exists takes the agent offline until it is edited."""
-        import llm_servers
         changed = False
-        for s in [self.specs[n] for n in (names or list(self.specs)) if n in self.specs]:
-            if not _linked(s):
-                continue
-            for k in LLM_RESOLVED:
-                s.pop(k, None)
-            r = llm_servers.resolve(s)
-            if r.get("llm_error") == "needs an LLM server":
-                s.pop("llm", None)
-                s.pop("llm_model", None)
-                if not s.get("needs_llm") or s.get("enabled", True):
-                    s["needs_llm"], s["enabled"] = True, False
-                    changed = True
-            s.update(r)
+        for s in [self.specs[n] for n in (list(self.specs) if names is None else names) if n in self.specs]:
+            changed |= self._resolve_into(s)
         if changed:
             self.save()
+
+    @staticmethod
+    def _resolve_into(s: dict) -> bool:
+        """Resolve first, then update in place: running turns read these fields, so they are
+        never removed while a value is being looked up. -> True when the agent went offline."""
+        import llm_servers
+        if not _linked(s):
+            return False
+        r = llm_servers.resolve(s)
+        went_offline = False
+        if r.get("llm_error") == "needs an LLM server" and (not s.get("needs_llm") or s.get("enabled", True)):
+            s["needs_llm"], s["enabled"] = True, False  # the link stays: re-adding the server restores it
+            went_offline = True
+        for k in LLM_RESOLVED:
+            if k not in r:
+                s.pop(k, None)
+        s.update(r)
+        return went_offline
 
     def linked(self, server_id: str) -> list[str]:
         return [n for n, s in self.specs.items() if s.get("llm") == server_id]
@@ -1718,8 +1724,8 @@ class AgentManager:
         if err:
             return err
         chans = spec.pop("channels", None)  # membership lives in channel_members.json
+        self._resolve_into(spec)  # before it is visible to running turns
         self.specs[spec["name"]] = spec
-        self.refresh_llm([spec["name"]])
         self.save()
         if chans is not None:
             for ch in set(self.members) | set(chans):

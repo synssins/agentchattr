@@ -28,11 +28,24 @@ PRESETS = {
 }
 
 
+class Unreadable(Exception):
+    """llm_servers.json exists but can't be read: nothing may overwrite it or drop links."""
+
+
+UNREADABLE = "LLM servers file (data/llm_servers.json) is unreadable; fix or restore it"
+
+
 def load() -> list[dict]:
-    try:
-        return json.loads((data_dir / FILE).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
+    p = data_dir / FILE
+    if not p.exists():
         return []
+    try:
+        data = json.loads(p.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Unreadable(str(exc)) from exc
+    if not isinstance(data, list) or not all(isinstance(s, dict) and s.get("id") and s.get("base_url") for s in data):
+        raise Unreadable("expected a list of servers with id and base_url")
+    return data
 
 
 def save(servers: list[dict]):
@@ -64,6 +77,7 @@ def config_entries() -> list[dict]:
 
 
 def get(server_id: str) -> dict | None:
+    """Raises Unreadable when the servers file is damaged."""
     return next((s for s in load() + config_entries() if s.get("id") == server_id), None)
 
 
@@ -79,7 +93,10 @@ def upsert(entry: dict) -> str | None:
     sid = entry.get("id") or ""
     if sid.startswith("cfg-"):
         return "servers from config.toml are read-only; edit the config file"
-    servers = load()
+    try:
+        servers = load()
+    except Unreadable:
+        return UNREADABLE
     old = next((s for s in servers if s["id"] == sid), None) if sid else None
     new = dict(old or {"id": sid or "srv-" + secrets.token_hex(4)})
     for k in ("name", "base_url", "api_format", "default_model"):
@@ -108,13 +125,19 @@ def remove(server_id: str, linked: list[str]) -> str | None:
         return "servers from config.toml are read-only; edit the config file"
     if linked:
         return f"{len(linked)} agents linked; unlink them first"
-    save([s for s in load() if s["id"] != server_id])
+    try:
+        save([s for s in load() if s["id"] != server_id])
+    except Unreadable:
+        return UNREADABLE
     return None
 
 
 def note_models(server_id: str, models: list[str]):
     """After listing a server's models: one model and no default of the owner's -> that's the default."""
-    servers = load()
+    try:
+        servers = load()
+    except Unreadable:
+        return
     s = next((x for x in servers if x["id"] == server_id), None)
     if not s or len(models) != 1 or (s.get("default_model") and not s.get("default_auto")):
         return
@@ -125,7 +148,10 @@ def note_models(server_id: str, models: list[str]):
 
 def resolve(spec: dict) -> dict:
     """{base_url, api_format, api_key, model} for a linked agent, or {llm_error}. No network."""
-    s = get(spec.get("llm") or "")
+    try:
+        s = get(spec.get("llm") or "")
+    except Unreadable:
+        return {"llm_error": UNREADABLE}
     if not s:
         return {"llm_error": "needs an LLM server"}
     model = spec.get("llm_model") or s.get("default_model") or ""
@@ -141,7 +167,10 @@ def migrate(specs: dict[str, dict]) -> bool:
     todo = [s for s in specs.values() if s.get("kind") == "api" and not s.get("llm") and s.get("base_url")]
     if not todo:
         return False
-    servers = load()
+    try:
+        servers = load()
+    except Unreadable:
+        return False  # keep the agents' own endpoint fields until the file is fixed
     for spec in todo:
         key = (spec["base_url"].rstrip("/"), spec.get("api_format", "openai"), spec.get("api_key", ""))
         srv = next((s for s in servers if (s["base_url"].rstrip("/"), s.get("api_format", "openai"),

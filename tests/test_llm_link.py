@@ -113,6 +113,43 @@ class LlmLink(unittest.TestCase):
         self.assertEqual(m.specs["q-2"]["llm"], m.specs["q"]["llm"])
         self.assertNotIn("api_key", self.on_disk()["q-2"])
 
+    def test_corrupt_servers_file_destroys_nothing(self):
+        m = self.manager()
+        sid = m.specs["q"]["llm"]
+        good = (self.dir / "llm_servers.json").read_text()
+        (self.dir / "llm_servers.json").write_text(good.rstrip().rstrip("]") + ",]")  # hand edit gone wrong
+        m2 = agent_runner.AgentManager(self.hub, str(self.dir))
+        m2._apply = lambda name: None
+        disk = self.on_disk()["q"]
+        self.assertEqual((disk["llm"], disk["llm_model"], disk.get("enabled")), (sid, "m-q", True))
+        self.assertIn("llm_servers.json", m2.specs["q"]["llm_error"])
+        self.assertIsNotNone(llm_servers.upsert({"name": "N", "base_url": "http://n/v1"}))  # refuses to overwrite
+        self.assertIn(",]", (self.dir / "llm_servers.json").read_text())
+
+    def test_missing_server_keeps_the_link_for_when_it_returns(self):
+        m = self.manager()
+        sid = m.specs["q"]["llm"]
+        saved = llm_servers.load()
+        llm_servers.save([])
+        m.refresh_llm()
+        self.assertEqual((m.specs["q"]["llm"], m.specs["q"]["llm_model"]), (sid, "m-q"))
+        llm_servers.save(saved)
+        m.refresh_llm()
+        self.assertEqual(m.specs["q"]["base_url"], "http://127.0.0.1:8090/v1")
+
+    def test_refresh_never_clears_fields_a_running_turn_reads(self):
+        m = self.manager()
+        real = llm_servers.resolve
+        seen = []
+        def watch(spec):
+            seen.append((spec.get("base_url"), spec.get("model")))
+            return real(spec)
+        with mock.patch.object(llm_servers, "resolve", watch):
+            m.refresh_llm()
+            m.upsert(dict(m.specs["q"], llm_model="m-q"))
+        self.assertTrue(seen)
+        self.assertNotIn((None, None), seen)
+
 
 if __name__ == "__main__":
     unittest.main()
