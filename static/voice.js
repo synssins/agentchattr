@@ -33,6 +33,10 @@ const Voice = (() => {
     let spoken = [];       // [{t, words}] sentences read aloud lately, to drop their echo
     const TAIL_MS = 800;
     const bargeIn = () => store.get('agenthub-voice-bargein', false);  // Settings > Voice; for headphones
+    // Settings > Voice, on by default: hands-free speech goes to the server's voice check, which answers
+    // only speech said TO an agent by name (anywhere in the sentence) or a follow-up (voice_gate.py)
+    const namedMode = () => store.get('agenthub-voice-named', true);
+    let heard = '';  // short status after the check ignored a sentence
 
     // Is the room speaker talking (or just stopped)? While it is, the mic is not listened to
     // unless barge-in is on.
@@ -204,6 +208,8 @@ const Voice = (() => {
         running = false;
         current = null;
         if (mine === gen) markPlaying(null);
+        if (mine === gen && talking && namedMode())  // the follow-up window starts when the reply is heard
+            post('/api/voice/played', { channel: activeChannel }).catch(() => {});
     }
 
     function toast(text) {
@@ -398,6 +404,17 @@ const Voice = (() => {
             const text = (data.text || '').trim();
             if (!text || /^[\[(].*[\])]$/.test(text)) return;  // [BLANK_AUDIO], (noise)
             if (isEcho(text)) return;  // the mic heard the agent's own voice
+            if (talking && namedMode()) {  // the server decides; it posts accepted speech itself
+                const g = await (await post('/api/voice/utterance', { text, channel: activeChannel, sender: username })).json();
+                if (g.error) throw new Error(g.error);
+                if (g.accepted) { target = g.to; waiting = true; heard = ''; }
+                else if (g.reason === 'stopped') { stop(); waiting = false; heard = `Stopped @${g.to}`; }
+                else heard = g.notice || (g.reason === 'decision_unavailable' ? 'Voice check unavailable'
+                    : g.open ? `Ignored (talking with @${g.open})` : 'Ignored: not said to an agent');
+                if (g.notice) toast(g.notice);
+                if (!g.accepted && g.open) target = g.open;
+                return;
+            }
             if (target && STOP_WORDS.test(text)) {
                 stop();
                 await post('/api/agents/stop', { name: target, channel: activeChannel });
@@ -463,7 +480,7 @@ const Voice = (() => {
             : talking ? (waiting ? 'waiting' : 'listening') : 'off';
         ui.talk.dataset.state = state;
         ui.talk.setAttribute('aria-pressed', String(talking));
-        ui.status.textContent = { off: '', listening: 'Listening…', hearing: 'Hearing you…', thinking: 'Transcribing…',
+        ui.status.textContent = { off: '', listening: heard ? `Listening… (${heard})` : (namedMode() ? 'Listening for a name…' : 'Listening…'), hearing: 'Hearing you…', thinking: 'Transcribing…',
             waiting: `Waiting for ${target || 'a reply'}…`, speaking: 'Speaking… (talk to interrupt)', recording: 'Recording… release to send' }[state];
         ui.bar.hidden = !talking && !ptt && playing == null;
         ui.auto.setAttribute('aria-pressed', String(autoOn()));

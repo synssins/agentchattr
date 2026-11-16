@@ -602,6 +602,13 @@ def set_event_loop(loop):
 
 def _on_store_message(msg: dict):
     """Called from any thread when a message is added to the store."""
+    try:  # an agent's reply keeps its voice conversation open (voice_gate.py)
+        import voice_gate
+        if msg.get("type", "chat") == "chat" and msg.get("thread") is None:
+            voice_gate.saw_reply(msg.get("channel", "general"), msg.get("sender", ""), msg.get("text", ""),
+                                 float(msg.get("timestamp") or __import__("time").time()))
+    except Exception:
+        log.exception("voice_gate reply hook")
     if _event_loop is None:
         return
     try:
@@ -2672,6 +2679,111 @@ async def voice_transcribe(request: Request):
         return {"text": await asyncio.to_thread(voice.transcribe, audio)}
     except Exception as exc:
         return JSONResponse({"error": f"transcription failed: {str(exc)[:200]}"}, status_code=502)
+
+
+VOICE_CHECK_TIMEOUT = 20  # seconds; past this the sentence is ignored (fail closed). Queued behind a reply on the same GPU it can take a while
+
+
+def _voice_check_spec() -> dict | None:
+    """The voice check model (Settings > Voice) as a minimal API spec, or None."""
+    import llm_servers
+    import voice
+    pick = voice.load().get("check_model") or {}
+    try:
+        s = llm_servers.get(pick.get("server") or "")
+    except llm_servers.Unreadable:
+        return None
+    model = pick.get("model") or (s or {}).get("default_model")
+    if not s or not model:
+        return None
+    return {"name": "voice-check", "kind": "api", "base_url": s["base_url"], "api_format": s.get("api_format", "openai"),
+            "api_key": s.get("api_key", ""), "model": model, "temperature": 0, "timeout": VOICE_CHECK_TIMEOUT}
+
+
+def _voice_ask(spec: dict, prompt: str) -> str | None:
+    import urllib.error
+    import agent_runner
+    import voice_gate
+    msgs = [{"role": "user", "content": prompt}]
+    try:
+        try:
+            return (agent_runner.call_api_message(spec, voice_gate.PROMPT, msgs, effort="none") or {}).get("content")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (400, 422):
+                raise
+            return (agent_runner.call_api_message(spec, voice_gate.PROMPT, msgs) or {}).get("content")
+    except Exception as exc:
+        log.warning("voice check failed: %s", str(exc)[:200])  # never logs the speech itself
+        return None
+
+
+@app.post("/api/voice/utterance")
+async def voice_utterance(request: Request):
+    """Voice by name, no wake word. Body: {text, channel, sender?}. Accepted speech is posted as the
+    owner's message; anything else is dropped without a trace. -> {accepted, to, reason, open, message_id?}"""
+    import responder
+    import voice_gate
+    body = await request.json()
+    text = str(body.get("text") or "").strip()[:2000]
+    channel = str(body.get("channel") or "general")
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    names = [n for n in registry.get_active_names() if not agent_manager or agent_manager.in_channel(n, channel)]
+    specs = agent_manager.specs if agent_manager else {}
+    here = {n: (specs.get(n, {}).get("label") or (registry.get_instance(n) or {}).get("label") or n) for n in names}
+    spec = _voice_check_spec()
+
+    def ask(prompt):
+        return _voice_ask(spec, prompt) if spec else None
+    try:
+        r = await asyncio.wait_for(asyncio.to_thread(voice_gate.decide, text, channel, here, ask, responder.named),
+                                   VOICE_CHECK_TIMEOUT + 2)
+    except asyncio.TimeoutError:
+        r = {"accepted": False, "to": None, "reason": "decision_unavailable", "open": voice_gate.open_for(channel)}
+    if r["reason"] == "decision_unavailable" and not spec:
+        r["notice"] = "Voice check unavailable: pick a voice check model in Settings > Voice"
+    if r["reason"] == "stopped":
+        await asyncio.to_thread(stop_agents, [r["to"]], room_settings.get("username", "user"), channel)
+        await broadcast_status()
+    if r["accepted"]:
+        out = text if _re.search(r"(?<![\w.])@[\w-]+", text) else f"@{r['to']} {text}"
+        msg = store.add(str(body.get("sender") or room_settings.get("username", "user")), out,
+                        channel=channel, metadata={"voice": True})
+        r["message_id"] = msg["id"]
+    return r
+
+
+@app.post("/api/voice/played")
+async def voice_played(request: Request):
+    """The browser finished speaking a reply: the follow-up window starts from now."""
+    import voice_gate
+    body = await request.json()
+    voice_gate.played(str(body.get("channel") or "general"))
+    return {"open": voice_gate.open_for(str(body.get("channel") or "general"))}
+
+
+@app.get("/api/voice/check-model")
+async def voice_check_model_get():
+    import voice
+    return voice.load().get("check_model") or {}
+
+
+@app.post("/api/voice/check-model")
+async def voice_check_model_set(request: Request):
+    """Body: {server, model}: a server from Settings > LLMs and one of its models ("" = its default)."""
+    import llm_servers
+    import voice
+    body = await request.json()
+    server, model = str(body.get("server") or ""), str(body.get("model") or "")
+    if server and not llm_servers.get(server):
+        return JSONResponse({"error": "no such LLM server"}, status_code=400)
+    conf = voice.load()
+    if server:
+        conf["check_model"] = {"server": server, "model": model}
+    else:
+        conf.pop("check_model", None)
+    voice.save(conf)
+    return conf.get("check_model") or {}
 
 
 @app.post("/api/voice/clone")

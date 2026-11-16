@@ -260,6 +260,38 @@
         barge.addEventListener('change', () => { try { localStorage.setItem('agenthub-voice-bargein', JSON.stringify(barge.checked)); } catch (_) {} });
         panel.append(el('label', { class: 'agents-toggle' }, barge,
             el('span', { text: 'Interrupt an agent by talking over it (barge-in). Use with headphones: with speakers the mic hears the agent. Off: the mic pauses while an agent speaks.' })));
+        // Voice by name (voice_gate.py): hands-free speech reaches an agent only when said TO it
+        const named = el('input', { type: 'checkbox' });
+        try { named.checked = JSON.parse(localStorage.getItem('agenthub-voice-named') ?? 'true'); } catch (_) { named.checked = true; }
+        named.addEventListener('change', () => { try { localStorage.setItem('agenthub-voice-named', JSON.stringify(named.checked)); } catch (_) {} });
+        panel.append(el('label', { class: 'agents-toggle' }, named,
+            el('span', { text: 'Answer only when named (no wake word): in hands-free talk, an agent answers only when you say its name anywhere in the sentence, then follow-ups for 30 s without the name. Talking about an agent is ignored. Ignored speech is not posted or kept.' })));
+        const check = el('select', { 'aria-label': 'Voice check model' });
+        const checkNote = el('small', { text: 'Loading models…' });
+        panel.append(el('label', { class: 'agents-field' },
+            el('span', { text: 'Voice check model (decides whether a sentence was said to an agent; from Settings > LLMs)' }), check, checkNote));
+        (async () => {
+            try {
+                const [servers, cur] = await Promise.all([api('GET', '/api/admin/llms'), api('GET', '/api/voice/check-model')]);
+                check.append(el('option', { value: '', text: 'None (named voice ignores everything)' }));
+                const lists = await Promise.all(servers.map(x => api('POST', `/api/admin/llms/${encodeURIComponent(x.id)}/test`)
+                    .then(r => r.models).catch(() => [])));
+                servers.forEach((x, i) => {
+                    let host = x.base_url;
+                    try { host = new URL(x.base_url).host; } catch (_) { /* as typed */ }
+                    lists[i].forEach(m => check.append(el('option', { value: `${x.id}|${m}`, text: `${x.name} (${host}) · ${m}` })));
+                });
+                const want = cur.server ? `${cur.server}|${cur.model}` : '';
+                if (want && ![...check.options].some(o => o.value === want)) check.append(el('option', { value: want, text: `${cur.server} · ${cur.model} (unreachable)` }));
+                check.value = want;
+                checkNote.textContent = '';
+            } catch (err) { checkNote.textContent = err.message; }
+        })();
+        check.addEventListener('change', async () => {
+            const [server, model] = check.value ? check.value.split('|') : ['', ''];
+            try { await api('POST', '/api/voice/check-model', { server, model }); checkNote.textContent = 'Saved'; }
+            catch (err) { checkNote.textContent = err.message; }
+        });
         panel.append(el('label', { class: 'agents-field' }, el('span', { text: 'Mic button (voice typing, this browser)' }), typing),
             el('h3', { text: 'Speech providers' }));
         const rows = conf.providers.map(p => ({ ...p, parameters: { ...(p.parameters || {}) } }));
