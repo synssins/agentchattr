@@ -365,6 +365,68 @@
             devBox.append(form);
         }
         renderDevices();
+        // TECHO5 Dots on the network (voice_dots.py): found by mDNS or address, adopted, set up as devices
+        const dotBox = el('div');
+        const dotHost = el('input', { placeholder: 'IP address (optional)', 'aria-label': 'Dot address' });
+        const dotNote = el('small', { text: '' });
+        panel.append(el('h3', { text: 'Dots on the network' }), el('p', { class: 'settings-intro' },
+            'TECHO5 Echo Dots found on the network. Ready: waiting to be adopted (open its adoption window on the Dot first). Owned: it has a key already, usually Home Assistant\'s: give AgentHub that key to share it. Adopted: set it up as a voice device here, with no Home Assistant needed.'),
+            el('div', { class: 'agents-inline' },
+                el('button', { type: 'button', class: 'agents-btn', text: 'Find Dots', onclick: () => findDots() }),
+                dotHost, el('button', { type: 'button', class: 'agents-btn', text: 'Check address', onclick: () => findDots(dotHost.value.trim()) }),
+                dotNote), dotBox);
+        let hubURL = '';
+        const dotAction = async (label, fn) => {
+            dotNote.textContent = label + '…';
+            try { await fn(); dotNote.textContent = ''; findDots(); }
+            catch (err) { dotNote.textContent = err.message; }
+        };
+        async function findDots(host) {
+            dotNote.textContent = 'Looking…';
+            dotBox.textContent = '';
+            let dots = [];
+            try {
+                const r = await api('GET', '/api/admin/voice-dots');
+                dots = r.dots; hubURL = r.hub;
+                if (host) {
+                    const p = await api('POST', '/api/admin/voice-dots/probe', { host });
+                    if (!dots.some(d => d.mac && d.mac === p.mac)) dots.push(p);
+                }
+                dotNote.textContent = dots.length ? '' : 'No Dots found';
+            } catch (err) { dotNote.textContent = err.message; return; }
+            dotBox.append(table(['Dot', 'Address', 'State', ''], dots.map(d => {
+                const btn = (text, onclick, cls = 'agents-btn') => el('button', { type: 'button', class: cls, text, onclick });
+                const acts = el('span');
+                if (d.state === 'ready' || d.state === 'open') acts.append(btn('Adopt', () => {
+                    if (!confirm(`Adopt ${d.name}? It is taken from whatever had it (Home Assistant loses it).`)) return;
+                    dotAction('Adopting', () => api('POST', '/api/admin/voice-dots/adopt', { host: d.host, port: d.port }));
+                }));
+                if (d.state === 'owned') acts.append(btn('Use its key', () => {
+                    const key = prompt(`${d.name}'s API encryption key (Home Assistant: Settings > Devices > ESPHome > the Dot > Configure):`);
+                    if (key) dotAction('Checking the key', () => api('POST', '/api/admin/voice-dots/share', { host: d.host, port: d.port, key: key.trim() }));
+                }));
+                if (d.state === 'adopted') {
+                    acts.append(btn('Set up', () => {
+                        const channel = prompt('Channel for this Dot (its room):', d.channel || 'home');
+                        if (!channel) return;
+                        const hub = prompt('This AgentHub\'s address, as the Dot reaches it:', hubURL);
+                        if (!hub) return;
+                        const listen = confirm('Also listen without a wake word? (OK: yes, Cancel: no)');
+                        dotAction('Setting up', async () => {
+                            const r = await api('POST', `/api/admin/voice-dots/${encodeURIComponent(d.mac)}/configure`,
+                                { hub, channel: channel.trim().toLowerCase(), listen, brain: 'AgentHub' });
+                            renderDevices();
+                            if (!r.ok) throw new Error('Set up, but the Dot did not read back every setting: ' + JSON.stringify(r.dot));
+                        });
+                    }));
+                    acts.append(btn('Forget', () => {
+                        if (confirm(`Forget ${d.name}? AgentHub drops its key; the Dot keeps its settings.`))
+                            dotAction('Forgetting', () => api('DELETE', `/api/admin/voice-dots/${encodeURIComponent(d.mac)}`));
+                    }, 'agents-btn danger'));
+                }
+                return [d.name, d.host ? `${d.host}:${d.port}` : '', d.state + (d.device ? ` (#${d.channel})` : ''), acts];
+            })));
+        }
         panel.append(el('label', { class: 'agents-field' }, el('span', { text: 'Mic button (voice typing, this browser)' }), typing),
             el('h3', { text: 'Speech providers' }));
         const rows = conf.providers.map(p => ({ ...p, parameters: { ...(p.parameters || {}) } }));

@@ -43,6 +43,10 @@ def setup(app_module, cfg: dict):
     voice_devices.data_dir = data_dir
     import passphrase
     passphrase.data_dir = data_dir
+    import voice_dots
+    voice_dots.data_dir = data_dir
+    global server_port
+    server_port = int(cfg.get("server", {}).get("port", 8787))
     # Remote agents survive restarts: re-seed their bases so tokens resolve.
     for name, info in _load("remote_agents.json", {}).items():
         hub.registry.seed({name: {"label": info.get("label") or name, "color": info.get("color", "#64748b"),
@@ -116,6 +120,70 @@ async def voice_passphrase_set(request: Request):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return {"set": passphrase.configured()}
+
+
+server_port = 8787  # set by setup
+
+
+async def _dot_call(fn):
+    """A voice_dots call as an answer: a bad request is 400, a Dot that fails is 502."""
+    try:
+        return await fn()
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # a Dot off the network, a refused connection
+        return JSONResponse({"error": f"the Dot did not answer: {str(exc)[:200]}"}, status_code=502)
+
+
+@router.get("/api/admin/voice-dots")
+async def voice_dots_scan(request: Request):
+    """-> {dots, hub}: TECHO5 Dots on the network (mDNS) and the ones adopted, and this AgentHub's address
+    as a Dot reaches it."""
+    import voice_dots
+    dots = await asyncio.to_thread(voice_dots.scan)
+    return {"dots": dots, "hub": voice_dots.hub_address(request.headers.get("host", ""), server_port)}
+
+
+@router.post("/api/admin/voice-dots/probe")
+async def voice_dots_probe(request: Request):
+    import voice_dots
+    b = await request.json()
+    return await _dot_call(lambda: voice_dots.probe(str(b.get("host") or "").strip(), int(b.get("port") or 6053)))
+
+
+@router.post("/api/admin/voice-dots/adopt")
+async def voice_dots_adopt(request: Request):
+    import voice_dots
+    b = await request.json()
+    return await _dot_call(lambda: voice_dots.adopt(str(b.get("host") or "").strip(), int(b.get("port") or 6053)))
+
+
+@router.post("/api/admin/voice-dots/share")
+async def voice_dots_share(request: Request):
+    import voice_dots
+    b = await request.json()
+    return await _dot_call(lambda: voice_dots.share(str(b.get("host") or "").strip(), int(b.get("port") or 6053),
+                                                    str(b.get("key") or "")))
+
+
+@router.post("/api/admin/voice-dots/{mac}/configure")
+async def voice_dots_configure(mac: str, request: Request):
+    import voice_dots
+    b = await request.json()
+    channel = str(b.get("channel") or "home").strip().lower()
+    r = await _dot_call(lambda: voice_dots.configure(mac, str(b.get("hub") or ""), channel, bool(b.get("listen")),
+                                                     str(b.get("brain") or "AgentHub"), b.get("replies")))
+    if isinstance(r, dict):
+        await _ensure_channel(channel)
+    return r
+
+
+@router.delete("/api/admin/voice-dots/{mac}")
+async def voice_dots_forget(mac: str):
+    import voice_dots
+    if not voice_dots.forget(mac):
+        return JSONResponse({"error": "no such Dot"}, status_code=404)
+    return {"ok": True}
 
 
 @router.get("/api/admin/voice-devices")
