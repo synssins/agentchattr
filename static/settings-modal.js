@@ -14,6 +14,7 @@
         { group: 'Room' },
         { id: 'chat', label: 'Chat', render: (p) => renderBar(p, 'chat', 'Chat',
             'Your name, the server label, and how agents take turns. Loop guard: agent-to-agent hops before the room pauses for you (0 = off). Untagged messages: who answers when you name nobody with @; a model can pick the best-suited agent (Picking model: the API agent whose model chooses).') },
+        { id: 'llms', label: 'LLMs', render: renderLlms },
         { id: 'agents', label: 'Agents', render: (p) => window.AgentsSection.mount(p) },
         { id: 'rulebooks', label: 'Rulebooks', render: renderRulebooks },
         { group: 'Integrations' },
@@ -263,9 +264,9 @@
             el('h3', { text: 'Speech providers' }));
         const rows = conf.providers.map(p => ({ ...p, parameters: { ...(p.parameters || {}) } }));
         const list = el('div');
-        const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format (mp3, wav)'],
+        const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL (…/v1)'], ['model', 'Model'], ['format', 'Format'],
             ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL (cloning)'], ['default_voice', 'Default voice'],
-            ['sample_rate', 'Sample rate (streaming, if not sent)'], ['capabilities_url', 'Parameters URL (blank: the service\'s openapi.json)']];
+            ['sample_rate', 'Sample rate (streaming)'], ['capabilities_url', 'Parameters URL (blank: the service\'s openapi.json)']];
         // Engine parameters: each service says which settings it takes; controls are drawn from that
         const caps = {};  // provider name -> promise of [{name, type, min, max, ...}]
         const paramControl = (spec, values) => {
@@ -314,15 +315,36 @@
                 el('button', { type: 'button', class: 'agents-btn', text: 'Reset to defaults',
                     onclick: () => { r.parameters = {}; drawParams(box, r); } }));
         };
+        // A dropdown of known values; a saved value that is not in the list stays selectable
+        const choice = (value, opts, blank, label, onpick) => {
+            const cur = value == null ? '' : String(value);
+            const all = cur && !opts.includes(cur) ? [cur, ...opts] : opts;
+            const sel = el('select', { 'aria-label': label }, ...(blank ? [el('option', { value: '', text: blank })] : []),
+                ...all.map(o => el('option', { value: o, text: o })));
+            sel.value = cur;
+            sel.addEventListener('change', () => onpick(sel.value));
+            return sel;
+        };
+        const FORMATS = ['mp3', 'wav', 'opus', 'flac', 'aac', 'pcm'];
+        const RATES = ['16000', '22050', '24000', '44100', '48000'];
         const def = el('select', { 'aria-label': 'Default provider' });
         const draw = () => {
             list.textContent = '';
             rows.forEach((r, i) => {
                 const box = el('fieldset', { class: 'agents-group' }, el('legend', { text: r.name || 'New provider' }));
                 const grid = el('div', { class: 'agents-inline' });
+                const known = conf.voices[r.name] || {};
+                const lists = { format: [FORMATS, ''], sample_rate: [RATES, 'As sent by the service'],
+                    default_voice: [known.voices || [], 'None'], model: [known.models || [], 'None'] };
                 for (const [k, label] of fieldsOf) {
-                    const inp = el('input', { value: r[k] || '', 'aria-label': label });
-                    inp.addEventListener('input', () => { r[k] = inp.value; });
+                    const [opts, blank] = lists[k] || [[], ''];
+                    let inp;
+                    if (opts.length) {  // the service (or the format list) says what can be chosen
+                        inp = choice(r[k] || (k === 'format' ? 'mp3' : ''), opts, blank, label, (v) => { r[k] = v; });
+                    } else {            // URLs and names; also voice and model while the service cannot be asked
+                        inp = el('input', { value: r[k] || '', 'aria-label': label });
+                        inp.addEventListener('input', () => { r[k] = inp.value; });
+                    }
                     grid.append(el('label', { class: 'agents-field' }, el('span', { text: label }), inp));
                 }
                 const st = el('input', { type: 'checkbox', checked: !!r.stream });
@@ -345,7 +367,11 @@
         };
         draw();
         const stt = el('input', { value: conf.stt.wyoming, placeholder: 'host:port' });
-        const lang = el('input', { value: conf.stt.language || 'en', placeholder: 'en' });
+        const langName = new Intl.DisplayNames(['en'], { type: 'language' });
+        const lang = el('select', { 'aria-label': 'Language' }, ...[...new Set([conf.stt.language || 'en', 'en', 'es', 'fr', 'de', 'it',
+            'pt', 'nl', 'sv', 'da', 'no', 'fi', 'pl', 'cs', 'uk', 'ru', 'tr', 'ar', 'he', 'hi', 'ja', 'ko', 'zh'])]
+            .map(c => el('option', { value: c, text: `${langName.of(c)} (${c})` })));
+        lang.value = conf.stt.language || 'en';
         const cacheMb = el('input', { type: 'number', min: '0', max: '100000', value: conf.cache_mb ?? 512 });
         const save = el('button', { type: 'button', class: 'agents-btn primary', text: 'Save voice settings' });
         save.onclick = async () => {
@@ -470,6 +496,94 @@
                     await api('DELETE', `/api/admin/rulebooks/${encodeURIComponent(b.name)}`);
                     show('rulebooks');
                 } }))])));
+    }
+
+    // ------------------------------------------------------------ LLM servers
+    async function renderLlms(panel, editing) {
+        heading(panel, 'LLMs',
+            'The LLM servers your API agents use. Each server is set up once, with its key and a default model; agents pick a server here and use its default or one of its models. A server that offers a single model uses it as the default. Keys are write-only.');
+        const servers = await api('GET', '/api/admin/llms');
+        const presets = (window.AgentsSection && window.AgentsSection.PROVIDERS) || {};
+        const e = editing || { api_format: 'openai' };
+        const preset = el('select', { 'aria-label': 'Start from' });
+        preset.append(el('option', { value: '', text: 'Start from…' }));
+        for (const [k, p] of Object.entries(presets)) preset.append(el('option', { value: k, text: p.label }));
+        const name = el('input', { value: e.name || '', placeholder: 'e.g. Strata (local)' });
+        const baseUrl = el('input', { value: e.base_url || '', placeholder: 'http://127.0.0.1:4000/v1' });
+        const format = el('select');
+        format.append(el('option', { value: 'openai', text: 'OpenAI-compatible' }), el('option', { value: 'anthropic', text: 'Anthropic' }));
+        format.value = e.api_format || 'openai';
+        const key = el('input', { type: 'password', autocomplete: 'off',
+            placeholder: e.has_api_key ? 'Stored. Leave blank to keep it.' : 'API key (blank for local servers)' });
+        const def = el('select', { 'aria-label': 'Default model' });
+        const defNote = el('small');
+        const fillDefaults = (models, current) => {
+            def.textContent = '';
+            def.append(el('option', { value: '', text: 'None (agents must pin a model)' }));
+            const all = current && !models.includes(current) ? [current, ...models] : models;
+            all.forEach(m => def.append(el('option', { value: m, text: m })));
+            def.value = current || '';
+        };
+        fillDefaults([], e.default_model || '');
+        if (e.id) api('POST', `/api/admin/llms/${encodeURIComponent(e.id)}/test`)
+            .then(r => { fillDefaults(r.models, r.default_model || e.default_model || ''); defNote.textContent = `${r.models.length} models`; })
+            .catch(err => { defNote.textContent = err.message; });
+        else defNote.textContent = 'Save the server, then edit it to pick from its models.';
+        preset.addEventListener('change', () => {
+            const p = presets[preset.value];
+            if (!p) return;
+            if (p.base_url) baseUrl.value = p.base_url;
+            format.value = p.api_format;
+            if (!name.value) name.value = p.label;
+        });
+        const form = el('form', { class: 'agents-form settings-secret-box' },
+            el('strong', { text: e.id ? `Edit ${e.name}` : 'Add an LLM server' }),
+            e.id ? null : el('label', { class: 'agents-field' }, el('span', { text: 'Start from' }), preset),
+            el('div', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Base URL' }), baseUrl),
+                el('label', { class: 'agents-field' }, el('span', { text: 'API format' }), format)),
+            el('label', { class: 'agents-field' }, el('span', { text: 'API key (write-only)' }), key),
+            el('label', { class: 'agents-field' }, el('span', { text: 'Default model' }), def, defNote),
+            el('div', { class: 'agents-actions' },
+                e.id ? el('button', { type: 'button', class: 'agents-btn', text: 'Cancel', onclick: () => show('llms') }) : null,
+                el('button', { type: 'submit', class: 'agents-btn primary', text: 'Save server' })));
+        form.addEventListener('submit', async (ev) => {
+            ev.preventDefault();
+            const body = { id: e.id || '', name: name.value.trim(), base_url: baseUrl.value.trim(),
+                api_format: format.value, api_key: key.value };
+            if (e.id) body.default_model = def.value;  // new servers: picked after the first save
+            try { await api('POST', '/api/admin/llms', body); show('llms'); }
+            catch (err) { alert(err.message); }
+        });
+        panel.append(form);
+        if (!servers.length) return;
+        panel.append(table(['Name', 'Host', 'Format', 'Default model', 'Models', 'Agents', ''], servers.map(x => {
+            const count = el('span', { text: 'checking…' });
+            const defCell = el('span', { text: x.default_model || 'none' });
+            api('POST', `/api/admin/llms/${encodeURIComponent(x.id)}/test`)
+                .then(r => { count.textContent = String(r.models.length); defCell.textContent = r.default_model || 'none'; })
+                .catch(() => { count.textContent = 'unreachable'; });
+            let host = x.base_url;
+            try { host = new URL(x.base_url).host; } catch (_) { /* keep as typed */ }
+            const agents = (x.agents || []).map(n => '@' + n).join(', ') || '—';
+            const actions = x.readonly ? el('small', { text: 'from config.toml' }) : el('div', { class: 'agents-inline' },
+                el('button', { class: 'agents-btn', text: 'Edit', onclick: () => {
+                    const p = document.getElementById('settings-panel'); p.textContent = ''; renderLlms(p, x);
+                } }),
+                (x.agents || []).length ? el('button', { class: 'agents-btn', text: 'Unlink agents', onclick: async () => {
+                    if (!confirm(`Unlink ${x.agents.length} agents from ${x.name}? They go offline until you edit them and pick a server.`)) return;
+                    try { await api('POST', `/api/admin/llms/${encodeURIComponent(x.id)}/unlink`); show('llms'); }
+                    catch (err) { alert(err.message); }
+                } }) : null,
+                el('button', { class: 'agents-btn danger', text: (x.agents || []).length ? `Remove (${x.agents.length} linked)` : 'Remove',
+                    disabled: !!(x.agents || []).length, onclick: async () => {
+                        if (!confirm(`Remove LLM server "${x.name}"?`)) return;
+                        try { await api('DELETE', `/api/admin/llms/${encodeURIComponent(x.id)}`); show('llms'); }
+                        catch (err) { alert(err.message); }
+                    } }));
+            return [x.name, host, x.api_format === 'anthropic' ? 'Anthropic' : 'OpenAI', defCell, count, agents, actions];
+        })));
     }
 
     // ------------------------------------------------------------ MCP servers

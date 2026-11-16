@@ -87,7 +87,8 @@
         }
         const list = el('div', { class: 'agents-list' });
         for (const a of agents) {
-            const on = el('input', { type: 'checkbox', checked: a.enabled !== false, 'aria-label': `Enable ${a.name}` });
+            const on = el('input', { type: 'checkbox', checked: a.enabled !== false, 'aria-label': `Enable ${a.name}`,
+                disabled: !!a.needs_llm, title: a.needs_llm ? 'Edit it and pick an LLM server first' : '' });
             on.addEventListener('change', () => save({ ...a, enabled: on.checked }));
             const row = el('div', { class: 'agents-row' },
                 el('span', { class: 'agents-swatch', style: `background:${a.color || '#8b5cf6'}` }),
@@ -95,6 +96,8 @@
                     el('div', { class: 'agents-name', text: `@${a.name}` }),
                     el('div', { class: 'agents-sub', text: (a.kind === 'api' ? `${a.model || '?'} · ${providerLabel(a)}` : `${KINDS[a.kind]} · ${a.cwd || '~'}`)
                         + ' · #general' + (a.channels || []).map(c => ' #' + c).join('') }),
+                    a.needs_llm ? el('div', { class: 'agents-warn', text: 'Offline: needs an LLM server' })
+                        : a.llm_error ? el('div', { class: 'agents-warn', text: a.llm_error }) : null,
                     el('div', { class: 'agents-health', 'data-agent': a.name, text: 'Checking…' })),
                 permSelect(a),
                 el('label', { class: 'agents-toggle' }, on, el('span', { text: 'On' })),
@@ -209,46 +212,35 @@
         const persona = el('textarea', { rows: 4, placeholder: 'Empty: the agent writes its own the first time it is asked (e.g. "@all pick a persona for yourselves").' });
         persona.value = a.persona || '';
 
-        // API fields
-        const provider = el('select');
-        for (const [v, p] of Object.entries(PROVIDERS)) provider.append(el('option', { value: v, text: p.label }));
-        provider.value = Object.keys(PROVIDERS).find(k => PROVIDERS[k].base_url && PROVIDERS[k].base_url === a.base_url) || (a.base_url ? 'custom' : 'strata');
-        const baseUrl = el('input', { value: a.base_url || PROVIDERS[provider.value].base_url, placeholder: 'https://.../v1' });
-        const apiFormat = el('select');
-        apiFormat.append(el('option', { value: 'openai', text: 'OpenAI-compatible' }), el('option', { value: 'anthropic', text: 'Anthropic' }));
-        apiFormat.value = a.api_format || PROVIDERS[provider.value].api_format;
-        const providerHelp = el('small');
-        const showHelp = () => { providerHelp.textContent = PROVIDERS[provider.value].help || ''; };
-        provider.addEventListener('change', () => {
-            const p = PROVIDERS[provider.value];
-            if (p.base_url) baseUrl.value = p.base_url;
-            apiFormat.value = p.api_format;
-            showHelp();
-            if (p.base_url) loadModels(true);
-        });
-        showHelp();
-        const apiKey = el('input', { type: 'password', autocomplete: 'off',
-            placeholder: a.has_api_key ? (a.duplicateOf ? `Blank = use @${a.duplicateOf}'s key` : 'Stored. Leave blank to keep it.') : 'API key (blank for local servers)' });
-        const model = el('input', { list: 'agents-models', value: a.model || '', placeholder: 'Model id' });
-        const models = el('datalist', { id: 'agents-models' });
-        const fetchBtn = el('button', { type: 'button', class: 'agents-btn', text: 'Fetch models' });
-        // quiet: automatic load (provider picked or form opened), no alert or focus
-        async function loadModels(quiet) {
-            fetchBtn.textContent = 'Fetching…';
+        // API fields: the agent links to an LLM server (Settings > LLMs) and uses its default
+        // model or one the server advertises
+        const server = el('select', { 'aria-label': 'LLM server' });
+        const model = el('select', { 'aria-label': 'Model' });
+        const serverHelp = el('small');
+        let servers = [];
+        async function loadServerModels() {
+            const s = servers.find(x => x.id === server.value);
+            const keep = model.value || a.llm_model || '';
+            model.textContent = '';
+            model.append(el('option', { value: '', text: `Default (${(s && s.default_model) || 'none set'})` }));
+            if (keep) model.append(el('option', { value: keep, text: keep }));
+            model.value = keep;
+            serverHelp.textContent = s ? '' : 'Add a server in Settings > LLMs first.';
+            if (!s) return;
             try {
-                const ids = await api('POST', '/api/managed-agents/models',
-                    { base_url: baseUrl.value, api_key: apiKey.value, api_format: apiFormat.value, name: name.value });
-                models.textContent = '';
-                ids.forEach(id => models.append(el('option', { value: id })));
-                fetchBtn.textContent = `${ids.length} models`;
-                if (!quiet) model.focus();
-            } catch (e) {
-                fetchBtn.textContent = 'Fetch models';
-                if (!quiet) alert(e.message);
-            }
+                const r = await api('POST', `/api/admin/llms/${encodeURIComponent(s.id)}/test`);
+                model.firstChild.textContent = `Default (${r.default_model || 'none set'})`;
+                r.models.filter(m => m !== keep).forEach(m => model.append(el('option', { value: m, text: m })));
+            } catch (e) { serverHelp.textContent = `Couldn't list models: ${e.message}`; }
         }
-        fetchBtn.addEventListener('click', () => loadModels(false));
-        if (baseUrl.value && provider.value === 'openrouter') loadModels(true);  // public list, no key needed
+        server.addEventListener('change', () => { model.value = ''; loadServerModels(); });
+        api('GET', '/api/admin/llms').then(list => {
+            servers = list;
+            server.append(el('option', { value: '', text: 'Pick a server' }));
+            list.filter(x => !x.readonly).forEach(x => server.append(el('option', { value: x.id, text: x.name })));
+            server.value = a.llm || '';
+            loadServerModels();
+        }).catch(() => { serverHelp.textContent = 'LLM servers unavailable.'; });
         const temp = el('input', { type: 'number', step: '0.1', min: '0', max: '2', value: a.temperature ?? '', placeholder: 'default' });
         const ctx = el('input', { type: 'number', min: '1', max: '500', value: a.context_messages || 30 });
 
@@ -317,9 +309,8 @@
             text: 'Full access: the agent runs any command and edits any file on this machine without asking. Anyone who can post in the room can direct it.' });
 
         const apiBox = el('div', { class: 'agents-group' },
-            (() => { const f = field('Provider', provider); f.append(providerHelp); return f; })(), field('Base URL', baseUrl), field('API format', apiFormat),
-            field('API key', apiKey, 'Stored on the server only, never shown again.'),
-            el('div', { class: 'agents-inline' }, field('Model', model), fetchBtn), models,
+            (() => { const f = field('LLM server', server, 'Servers, keys and default models are set in Settings > LLMs.'); f.append(serverHelp); return f; })(),
+            field('Model', model, 'Default follows the server\'s default model; pick one to pin it.'),
             el('div', { class: 'agents-inline' }, field('Temperature', temp), field('Context messages', ctx),
                 field('Timeout (seconds)', timeout), field('Max tool steps per turn', steps)),
             field('Must use a tool first', requireTool, 'Every turn starts with a tool call (e.g. read_file), so the agent can\'t answer from memory.'),
@@ -381,10 +372,8 @@
                 effort: effort.value || null,
                 memory_size: memSize.value === '' ? null : Number(memSize.value),
             };
-            if (a.duplicateOf) spec.copy_key_from = a.duplicateOf;  // reuse the stored API key
             if (kind.value === 'api') {
-                Object.assign(spec, { base_url: baseUrl.value.trim(), api_format: apiFormat.value,
-                    api_key: apiKey.value, model: model.value.trim(),
+                Object.assign(spec, { llm: server.value, llm_model: model.value,
                     temperature: temp.value === '' ? null : Number(temp.value),
                     context_messages: Number(ctx.value) || 30, timeout: Number(timeout.value) || null,
                     max_tool_steps: Number(steps.value) || null, require_tool: requireTool.checked,
@@ -406,6 +395,6 @@
         document.querySelectorAll('.agents-more[open]').forEach(m => { if (!m.contains(e.target)) m.open = false; });
     });
 
-    window.AgentsSection = { mount };
+    window.AgentsSection = { mount, PROVIDERS };
     window.SettingsUI = { el, api };
 })();
