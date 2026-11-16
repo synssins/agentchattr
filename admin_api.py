@@ -39,6 +39,8 @@ def setup(app_module, cfg: dict):
     global hub, data_dir
     hub = app_module
     data_dir = Path(cfg.get("server", {}).get("data_dir", "./data"))
+    import voice_devices
+    voice_devices.data_dir = data_dir
     # Remote agents survive restarts: re-seed their bases so tokens resolve.
     for name, info in _load("remote_agents.json", {}).items():
         hub.registry.seed({name: {"label": info.get("label") or name, "color": info.get("color", "#64748b"),
@@ -83,6 +85,41 @@ def v1_key_name(given: str) -> str | None:
                 _save("v1_keys.json", keys)
                 return k["name"]
     return None
+
+
+@router.get("/api/admin/voice-devices")
+async def voice_devices_list():
+    import voice_devices
+    return voice_devices.list_public()
+
+
+@router.post("/api/admin/voice-devices")
+async def voice_devices_create(request: Request):
+    """-> {device, key}: the key is shown this once."""
+    import voice_devices
+    body = await request.json()
+    try:
+        dev, key = voice_devices.create(body.get("name", ""), body.get("channel", "home"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"device": dev, "key": key}
+
+
+@router.patch("/api/admin/voice-devices/{name}")
+async def voice_devices_patch(name: str, request: Request):
+    import voice_devices
+    body = await request.json()
+    if not voice_devices.set_channel(name, str(body.get("channel") or "")):
+        return JSONResponse({"error": "no such device, or a bad channel name"}, status_code=400)
+    return {"ok": True}
+
+
+@router.delete("/api/admin/voice-devices/{name}")
+async def voice_devices_delete(name: str):
+    import voice_devices
+    if not voice_devices.delete(name):
+        return JSONResponse({"error": "no such device"}, status_code=404)
+    return {"ok": True}
 
 
 @router.get("/api/admin/v1-keys")

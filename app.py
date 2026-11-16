@@ -260,6 +260,11 @@ def _install_security_middleware(token: str, cfg: dict):
             if path.startswith("/v1/"):
                 return await call_next(request)
 
+            # Voice devices (voice_devices.py): each /api/device/* route checks the device's
+            # own Bearer key; devices have no browser session or Origin.
+            if path.startswith("/api/device/") or path == "/voice-devices.txt":
+                return await call_next(request)
+
             # Agent self-registration (admin_api): /llms.txt and join are open to
             # the allowed networks; /api/triggers checks the agent's Bearer token.
             if path in ("/llms.txt", "/api/agents/join", "/api/triggers", "/api/persona"):
