@@ -87,6 +87,17 @@ def v1_key_name(given: str) -> str | None:
     return None
 
 
+async def _ensure_channel(channel: str):
+    """A device's channel shows up in the room like any channel created in the UI."""
+    rs = getattr(hub, "room_settings", None)
+    if rs is None or channel in rs.setdefault("channels", ["general"]):
+        return
+    rs["channels"].append(channel)
+    hub._save_settings()
+    if hasattr(hub, "broadcast_settings"):
+        await hub.broadcast_settings()
+
+
 @router.get("/api/admin/voice-devices")
 async def voice_devices_list():
     import voice_devices
@@ -102,6 +113,7 @@ async def voice_devices_create(request: Request):
         dev, key = voice_devices.create(body.get("name", ""), body.get("channel", "home"))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    await _ensure_channel(dev["channel"])
     return {"device": dev, "key": key}
 
 
@@ -111,6 +123,7 @@ async def voice_devices_patch(name: str, request: Request):
     body = await request.json()
     if not voice_devices.set_channel(name, str(body.get("channel") or "")):
         return JSONResponse({"error": "no such device, or a bad channel name"}, status_code=400)
+    await _ensure_channel(str(body["channel"]))
     return {"ok": True}
 
 

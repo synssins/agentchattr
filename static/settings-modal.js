@@ -292,6 +292,60 @@
             try { await api('POST', '/api/voice/check-model', { server, model }); checkNote.textContent = 'Saved'; }
             catch (err) { checkNote.textContent = err.message; }
         });
+        // Always-listening devices (Echo Dots on TECHO5, ...): voice_devices.py, /voice-devices.txt
+        const devBox = el('div');
+        panel.append(el('h3', { text: 'Devices' }), el('p', { class: 'settings-intro' },
+            'Always-listening devices (e.g. Echo Dots on TECHO5) send every utterance here and get spoken replies, with the same name rule as above. Each device posts into its own channel; add the agents it should reach to that channel. Protocol: ',
+            el('a', { href: '/voice-devices.txt', target: '_blank', rel: 'noopener', text: '/voice-devices.txt' }), '.'), devBox);
+        async function renderDevices(newKey) {
+            devBox.textContent = '';
+            let devices = [], channels = [];
+            try {
+                [devices, channels] = await Promise.all([api('GET', '/api/admin/voice-devices'),
+                    api('GET', '/api/settings').then(s => s.channels || []).catch(() => [])]);
+            } catch (err) { devBox.append(el('small', { text: err.message })); return; }
+            if (newKey) devBox.append(secretBox(`Key for ${newKey.name}`, newKey.key,
+                'Put this key in the device\'s TECHO5 config; it is not shown again.'));
+            const chanSelect = (value) => {
+                const sel = el('select', { 'aria-label': 'Channel' });
+                const all = [...new Set([...channels, value || 'home'])];
+                all.forEach(c => sel.append(el('option', { value: c, text: '#' + c })));
+                sel.value = value || 'home';
+                return sel;
+            };
+            const ago = (t) => {
+                if (!t) return 'never';
+                const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+                return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
+            };
+            if (devices.length) devBox.append(table(['Name', 'Channel', 'Last heard', ''], devices.map(d => {
+                const sel = chanSelect(d.channel);
+                sel.addEventListener('change', async () => {
+                    try { await api('PATCH', `/api/admin/voice-devices/${encodeURIComponent(d.name)}`, { channel: sel.value }); }
+                    catch (err) { alert(err.message); }
+                });
+                return [d.name, sel, ago(d.last_seen), el('button', { class: 'agents-btn danger', text: 'Remove', onclick: async () => {
+                    if (!confirm(`Remove device "${d.name}"? Its key stops working.`)) return;
+                    try { await api('DELETE', `/api/admin/voice-devices/${encodeURIComponent(d.name)}`); renderDevices(); }
+                    catch (err) { alert(err.message); }
+                } })];
+            })));
+            const name = el('input', { placeholder: 'e.g. office-dot', 'aria-label': 'Device name' });
+            const chan = chanSelect('home');
+            const form = el('form', { class: 'agents-inline' },
+                el('label', { class: 'agents-field' }, el('span', { text: 'Name' }), name),
+                el('label', { class: 'agents-field' }, el('span', { text: 'Channel' }), chan),
+                el('button', { type: 'submit', class: 'agents-btn primary', text: 'Add device' }));
+            form.addEventListener('submit', async (ev) => {
+                ev.preventDefault();
+                try {
+                    const r = await api('POST', '/api/admin/voice-devices', { name: name.value.trim().toLowerCase(), channel: chan.value });
+                    renderDevices({ name: r.device.name, key: r.key });
+                } catch (err) { alert(err.message); }
+            });
+            devBox.append(form);
+        }
+        renderDevices();
         panel.append(el('label', { class: 'agents-field' }, el('span', { text: 'Mic button (voice typing, this browser)' }), typing),
             el('h3', { text: 'Speech providers' }));
         const rows = conf.providers.map(p => ({ ...p, parameters: { ...(p.parameters || {}) } }));

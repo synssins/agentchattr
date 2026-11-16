@@ -63,6 +63,7 @@ class VoiceDeviceAdmin(unittest.TestCase):
         d = tmp.name
         hub = types.SimpleNamespace(registry=RuntimeRegistry(data_dir=d), store=MessageStore(str(Path(d) / "log.jsonl")),
                                     room_settings={"channels": ["general"]}, _save_settings=lambda: None)
+        self.hub = hub
         admin_api.setup(hub, {"server": {"data_dir": d}})
         app = FastAPI()
         app.include_router(admin_api.router)
@@ -77,6 +78,7 @@ class VoiceDeviceAdmin(unittest.TestCase):
         self.assertNotIn("hash", listed)
         self.assertEqual(self.c.post("/api/admin/voice-devices", json={"name": "office-dot", "channel": "home"}).status_code, 400)
         self.assertEqual(self.c.patch("/api/admin/voice-devices/office-dot", json={"channel": "office"}).status_code, 200)
+        self.assertEqual(self.hub.room_settings["channels"], ["general", "home", "office"])  # channels created
         self.assertEqual(self.c.delete("/api/admin/voice-devices/office-dot").status_code, 200)
         self.assertEqual(self.c.get("/api/admin/voice-devices").json(), [])
 
