@@ -126,6 +126,10 @@ def _post_json(url: str, payload: dict, headers: dict, timeout: int = 120) -> di
 _NO_STREAM: set = set()  # agents whose provider refused streaming
 
 
+class _BargeIn(Exception):
+    """Raised from a stream callback: a new message for the agent arrived; drop this generation."""
+
+
 def _post_stream(url: str, payload: dict, headers: dict, timeout: int, on_text,
                  on_reason=None) -> tuple[dict, dict]:
     """Streamed chat completion -> (assistant message, usage). on_text(text so far) runs per delta,
@@ -183,6 +187,10 @@ MEMORY_MAX = 4000          # chars of memory kept
 TOOL_BUDGET = 40000        # chars of tool output in one turn before older results are trimmed
 STOP_NOTE = ("(Room note: the owner stopped your turn here. Drop the request you were working on; "
              "don't resume it unless someone asks again.)")
+BARGE_NOTE = ("(New message(s) in the room while you were working. Read them now and adjust: change "
+              "course, stop, or carry on as they ask.)")
+CLI_BARGE_NOTE = ("(Your previous turn was interrupted after a tool step so you could read the new "
+                  "message(s) below. Your work so far is kept: continue from there, taking them into account.)")
 EFFORTS = ("none", "low", "medium", "high")
 AGENT_EFFORTS = EFFORTS + ("xhigh", "max")  # per agent (spec "effort"); xhigh/max are Claude Code levels
 CLI_EFFORTS = ("low", "medium", "high", "xhigh", "max")  # claude --effort
@@ -495,6 +503,7 @@ class Runner:
         self.tools = None               # ToolRunner of the in-flight API turn (its command is killed on /stop)
         self.thread: int | None = None  # parent message id when the current turn answers a thread
         self.resuming: set[str] = set()  # channels whose last turn a restart cut off
+        self.barged: set[str] = set()    # channels whose last CLI turn a new message interrupted
 
     @property
     def spec(self) -> dict:
@@ -754,6 +763,7 @@ class Runner:
         self.thread = thread  # read by _api_turn/_cli_turn/_addressed; the reply goes back there
         self.channel = channel  # read by halt_turn
         self._act_reset()
+        self._seen_id = None  # API agents: newest message from others this turn has read
         self.working = True
         self.m.set_inflight(self.name, channel, True)  # survives a restart: resumed at startup
         try:
@@ -816,8 +826,15 @@ class Runner:
             if reply.startswith(prefix):
                 reply = reply[len(prefix):].strip()
         self.last_ok = time.time()
+        seen = self.__dict__.get("_seen_id")
+        if seen is not None:  # answered (or chose not to): later triggers for these messages are done
+            self._cache_state("seen")[f"{channel}:{thread}"] = seen
+            if hasattr(self.m, "save_state"):
+                self.m.save_state()
         if (reply and reply != NO_REPLY) or attachments:
             meta = {"stream": self.stream_id}
+            if seen is not None:
+                meta["seen"] = seen  # messages after this id were sent while the reply was written
             if self.activity:
                 meta["activity"] = _act_saved(self.activity, time.monotonic() - self._act_t0)
             hub.store.add(self.name, "" if reply == NO_REPLY else reply, channel=channel,
@@ -903,10 +920,16 @@ class Runner:
     def _api_turn(self, channel: str) -> str:
         n = max(1, int(self.spec.get("context_messages") or 30))
         history = self._window(channel, n)
-        if history and history[-1]["sender"] == self.name:
-            # Nothing new since our own reply (a trigger we already answered). Gemini also
-            # rejects a request that ends with the model's turn (HTTP 400).
+        others = [m["id"] for m in history if m["sender"] != self.name]
+        seen = self._cache_state("seen").get(f"{channel}:{self.thread}")
+        if seen is None and history and history[-1]["sender"] == self.name:
+            seen = history[-1]["id"]  # replies from before "seen" was recorded
+        if history and (not others or (seen is not None and max(others) <= seen)):
+            # Nothing new since our own reply (a trigger we already answered, or a message
+            # already read mid-turn). Gemini also rejects a request that ends with the model's turn.
             return NO_REPLY
+        history = _after_replies(history, self.name)
+        self._seen_id = max(others, default=None)
         inline = set()  # ids of the newest messages whose images go inline
         for m in reversed(history):
             if len(inline) >= MAX_IMAGES:
@@ -994,6 +1017,29 @@ class Runner:
                              "sid": sid, "text": text})
             asyncio.run_coroutine_threadsafe(hub._broadcast(ev), loop)
         return push
+
+    def _read_fresh(self, channel: str, msgs: list[dict]) -> bool:
+        """Add messages sent since this API turn last read the room to `msgs`. -> any added."""
+        fresh = self._fresh(channel)
+        if not fresh:
+            return False
+        self._seen_id = fresh[-1]["id"]
+        msgs.append({"role": "user", "content": BARGE_NOTE + "\n" + "\n".join(
+            f"#{m['id']} {m['sender']}: {self._text(m)}" for m in fresh)})
+        self._act(channel, {"k": "status", "text": "Read a new message mid-turn"})
+        return True
+
+    def _fresh(self, channel: str, since: int | None = None) -> list[dict]:
+        """Chat messages from others in this channel (or thread) newer than `since`
+        (default: the newest this API turn has read)."""
+        since = self.__dict__.get("_seen_id") if since is None else since
+        if since is None:
+            return []
+        store = self.m.hub.store
+        msgs = store.get_thread(self.thread) if self.thread is not None else store.get_since(since, channel=channel)
+        return [m for m in msgs if m["id"] > since and m.get("sender") not in (self.name, "system", "")
+                and m.get("type", "chat") == "chat" and not (m.get("metadata") or {}).get("echo")
+                and (self.thread is not None or m.get("thread") is None)]
 
     def _cache_state(self, key: str) -> dict:
         """Per-agent prompt-cache bookkeeping kept in the state file (window starts, room notes)."""
@@ -1087,19 +1133,43 @@ class Runner:
             steps = max(1, int(spec.get("max_tool_steps") or MAX_TOOL_STEPS))
         except (TypeError, ValueError):
             steps = MAX_TOOL_STEPS
+        streamer = self._streamer(channel)
         for step in range(steps):
             _trim_tool_output(msgs)
             think = {"i": None, "text": ""}
+            said = {"text": "", "checked": time.monotonic()}
+
+            def barge(said=said):
+                """Mid-generation barge-in: stop streaming when a message for this agent is queued."""
+                now = time.monotonic()
+                if now - said["checked"] >= 1 and not self.halt.is_set():
+                    said["checked"] = now
+                    if self._queued(channel) and self._fresh(channel):
+                        raise _BargeIn()
 
             def on_reason(text: str, think=think):
                 think["text"] = text
                 think["i"] = self._act(channel, {"k": "thinking", "text": text}, think["i"], force=False)
+                barge()
+
+            def on_text(text: str, said=said):
+                said["text"] = text
+                if streamer:
+                    streamer(text)
+                barge()
             try:  # "require_tool": the first step must call a tool (read before answering)
                 reply = call_api_message(spec, system, msgs, tools,
                                          "required" if step == 0 and spec.get("require_tool") else None,
-                                         on_text=self._streamer(channel),
+                                         on_text=on_text,
                                          effort=api_effort(effort_level(spec, channel)),
                                          on_reason=on_reason)
+            except _BargeIn:
+                log.info("%s: new message mid-reply in #%s; reading it", self.name, channel)
+                partial = re.sub(r"<think>.*?(</think>|$)", "", said["text"], flags=re.S).strip()
+                if partial:
+                    msgs.append({"role": "assistant", "content": partial + " …(cut off: a new message arrived)"})
+                self._read_fresh(channel, msgs)
+                continue
             except urllib.error.HTTPError as exc:
                 # A 400 with inline images: let the caller retry without images first
                 if images_inline or not tools or exc.code not in (400, 422):
@@ -1158,6 +1228,7 @@ class Runner:
                                     "input": json.dumps(args, ensure_ascii=False), "out": str(out),
                                     "err": str(out).startswith("error")}, step_i)
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": out})
+            self._read_fresh(channel, msgs)  # barge-in: messages sent while the tools ran
         # Out of steps: one last call without tools so the agent reports where it got to
         log.info("%s used all %d tool steps; asking for a summary", self.name, steps)
         msgs.append({"role": "user", "content": (
@@ -1195,6 +1266,9 @@ class Runner:
             prompt = f"New messages in #{channel}:\n\n{transcript}{hint}\n\nYour reply to post in #{channel}:"
         if channel in self.resuming:
             prompt = RESUME_NOTE + "\n\n" + prompt
+        if channel in self.barged:
+            self.barged.discard(channel)
+            prompt = CLI_BARGE_NOTE + "\n\n" + prompt
         if spec["kind"] == "agy" and session:  # no system-prompt flag: restate the notes, they change
             import memory
             notes = memory.notes(self.name, memory.size(spec))
@@ -1222,7 +1296,7 @@ class Runner:
                     if sid:
                         state["sessions"][channel] = sid
                     self.m.save_state()
-                streamed, stderr = self._claude_stream(channel, on_posted)
+                streamed, stderr = self._claude_stream(channel, on_posted, since=max(m["id"] for m in new))
                 stdout = ""
             else:
                 stdout, stderr = self.proc.communicate(timeout=CLI_TIMEOUT)
@@ -1239,6 +1313,14 @@ class Runner:
                 self.m.save_state()
             return ""
         text, new_session = streamed if streamed else parse_cli_output(stdout)
+        if self.__dict__.pop("_cli_barged", False):  # interrupted for a new message: its queued turn resumes
+            if thread is None:
+                state["cursors"][channel] = max(m["id"] for m in new)
+            if new_session:
+                state["sessions"][channel] = new_session
+            self.m.save_state()
+            self.barged.add(channel)
+            return ""
         if code != 0 and not text and not (streamed and self.__dict__.get("_cli_posted")):
             raise RuntimeError((stderr or stdout or f"exit {code}").strip()[-300:])
         if thread is None:
@@ -1249,7 +1331,22 @@ class Runner:
         return text
 
 
-    def _claude_stream(self, channel: str, on_posted=None) -> tuple[tuple[str, str | None], str]:
+    def _queued(self, channel: str) -> bool:
+        """Is a trigger for this channel (and thread) waiting in the queue file? Read, not consumed."""
+        try:
+            lines = (Path(self.m.data_dir) / f"{self.name}_queue.jsonl").read_text("utf-8").splitlines()
+        except OSError:
+            return False
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("channel", "general") == channel and e.get("thread") == self.thread:
+                return True
+        return False
+
+    def _claude_stream(self, channel: str, on_posted=None, since: int | None = None) -> tuple[tuple[str, str | None], str]:
         """Read Claude Code's stream-json events as they come. Steps go to the live activity view.
         Each reply is posted as soon as it is complete, even while the process keeps running:
         with background subagents Claude Code holds every "result" event until it exits, so a
@@ -1271,6 +1368,7 @@ class Runner:
         session, results, posted = None, [], []
         pending = None  # (message id, text): a reply that may still continue with a tool call
         self._cli_posted = False
+        self._cli_barged = False
 
         def post(text: str):
             if not text or text == NO_REPLY or text in posted or self.halt.is_set() or self.stop.is_set():
@@ -1343,6 +1441,14 @@ class Runner:
                         out = "\n".join(x.get("text", "") for x in out if isinstance(x, dict))
                     self._act(channel, {**self.activity[i], "out": str(out or ""),
                                         "err": bool(b.get("is_error"))}, i)
+                # Barge-in: a message for this agent arrived. Stop at this tool boundary; the
+                # queued turn resumes the session with it. Not once a reply is out (background work).
+                if (since is not None and not sub and not self._cli_posted and not self.__dict__.get("_cli_barged")
+                        and self._queued(channel) and self._fresh(channel, since)):
+                    log.info("%s: new message mid-turn in #%s; interrupting to read it", self.name, channel)
+                    self._cli_barged = True
+                    self._act(channel, {"k": "status", "text": "New message: pausing to read it"})
+                    kill_group(proc)
             elif ev.get("type") == "result":
                 text = (ev.get("result") or "").strip() if isinstance(ev.get("result"), str) else ""
                 last_step = self.activity[-1] if self.activity else None
@@ -1365,6 +1471,21 @@ class Runner:
         if final in posted:
             final = ""
         return (final, session), "".join(err)
+
+
+def _after_replies(history: list[dict], name: str) -> list[dict]:
+    """Move a message sent while `name` was writing a reply (its id is between the reply's
+    metadata "seen" and the reply) to just after that reply: the reply never saw it, and the
+    context must not read as if it answered it."""
+    replies = [r for r in history if r["sender"] == name and (r.get("metadata") or {}).get("seen") is not None]
+
+    def key(m: dict) -> tuple[int, int]:
+        if m["sender"] != name:
+            for r in replies:
+                if r["metadata"]["seen"] < m["id"] < r["id"]:
+                    return (r["id"], 1)
+        return (m["id"], 0)
+    return sorted(history, key=key)
 
 
 def _turn_ended(session: str, message_id: str) -> bool:
