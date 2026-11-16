@@ -58,6 +58,21 @@ def skills() -> dict[str, dict]:
     return found
 
 
+_searxng_cache: list = []
+
+
+def _searxng_url() -> str:
+    """[search] searxng = "http://host:port" in config.toml / config.local.toml; "" = no web_search."""
+    if not _searxng_cache:
+        try:
+            import config_loader
+            url = str(((config_loader.load_config() or {}).get("search") or {}).get("searxng") or "")
+        except Exception:
+            url = ""
+        _searxng_cache.append(url.rstrip("/"))
+    return _searxng_cache[0]
+
+
 def tool_specs(perm: str, allowed: list[str], memory: bool = False) -> list[dict]:
     def fn(name, desc, props, required):
         return {"type": "function", "function": {"name": name, "description": desc, "parameters": {
@@ -79,6 +94,12 @@ def tool_specs(perm: str, allowed: list[str], memory: bool = False) -> list[dict
            "of replying when a reaction says enough. Reactions never wake anyone.",
            {"message_id": {"type": "integer"}, "emoji": s}, ["message_id", "emoji"]),
     ]
+    if _searxng_url():
+        specs.append(fn("web_search", "Search the web (the owner's SearXNG). kind: web (default), images or news. "
+                        "Results come back as Markdown: show the owner the useful ones as links "
+                        "[title](url), and images inline as ![caption](image url).",
+                        {"query": s, "kind": {"type": "string", "enum": ["web", "images", "news"]},
+                         "count": {"type": "integer"}}, ["query"]))
     if memory:
         specs.append(fn("remember", "Save one short note to your long-term memory (a preference, decision or "
                         "fact worth keeping across conversations).", {"note": s}, ["note"]))
@@ -122,6 +143,37 @@ class ToolRunner:
         except Exception as exc:  # report to the model; it can try something else
             out = f"error: {exc}"
         return out if len(out) <= MAX_OUT else out[:MAX_OUT] + f"\n…[truncated, {len(out)} chars]"
+
+    def t_web_search(self, query: str, kind: str = "web", count: int = 8) -> str:
+        import json
+        import urllib.parse
+        import urllib.request
+        base = _searxng_url()
+        if not base:
+            return "error: web search is not configured"
+        kind = kind if kind in ("web", "images", "news") else "web"
+        count = max(1, min(int(count or 8), 15))
+        params = {"q": query, "format": "json"}
+        if kind != "web":
+            params["categories"] = kind
+        req = urllib.request.Request(f"{base}/search?{urllib.parse.urlencode(params)}",
+                                     headers={"Accept": "application/json", "User-Agent": "AgentHub"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            results = json.load(r).get("results") or []
+        md = lambda t: str(t or "").replace("[", "(").replace("]", ")").replace("\n", " ").strip()
+        lines = []
+        for x in results:
+            if len(lines) >= count:
+                break
+            if kind == "images":
+                img = x.get("img_src") or x.get("thumbnail_src")
+                if img:
+                    lines.append(f"{len(lines) + 1}. ![{md(x.get('title')) or 'image'}]({img}) (from {x.get('url', '')})")
+            elif x.get("url"):
+                snippet = md(x.get("content"))[:240]
+                lines.append(f"{len(lines) + 1}. [{md(x.get('title')) or x['url']}]({x['url']})"
+                             + (f" — {snippet}" if snippet else ""))
+        return "\n".join(lines) or f"no {kind} results for {query!r}"
 
     def t_react(self, message_id: int, emoji: str) -> str:
         return self.react(int(message_id), str(emoji)) if self.react else "error: reactions are not available"

@@ -302,6 +302,8 @@ function renderMarkdown(text) {
     text = text.replace(/\x00P(\d+)\x00/g, (_, i) => pathSlots[parseInt(i)]);
     // Parse markdown, then color @mentions, URLs, and file paths in the output
     let html = marked.parse(text);
+    // Web links open in a new tab, so following one never leaves the chat
+    html = html.replace(/<a href="(https?:[^"]*)"(?![^>]*\btarget=)/g, '<a href="$1" target="_blank" rel="noopener noreferrer"');
     // Remove wrapping <p> tags for single-line messages to keep them inline
     const trimmed = html.trim();
     if (trimmed.startsWith('<p>') && trimmed.endsWith('</p>') && trimmed.indexOf('<p>', 1) === -1) {
