@@ -2711,29 +2711,29 @@ def _voice_ask(spec: dict, prompt: str) -> str | None:
         return None
 
 
-@app.post("/api/voice/utterance")
-async def voice_utterance(request: Request):
-    """Voice by name, no wake word. Body: {text, channel, sender?}. Accepted speech is posted as the
-    owner's message; anything else is dropped without a trace. -> {accepted, to, reason, open, message_id?}"""
-    import responder
-    import voice_gate
-    body = await request.json()
-    text = str(body.get("text") or "").strip()[:2000]
-    channel = str(body.get("channel") or "general")
-    if not text:
-        return JSONResponse({"error": "text is required"}, status_code=400)
+def _voice_here(channel: str) -> dict:
+    """{handle: label} of the agents in a channel, for the voice check."""
     names = [n for n in registry.get_active_names() if not agent_manager or agent_manager.in_channel(n, channel)]
     specs = agent_manager.specs if agent_manager else {}
-    here = {n: (specs.get(n, {}).get("label") or (registry.get_instance(n) or {}).get("label") or n) for n in names}
+    return {n: (specs.get(n, {}).get("label") or (registry.get_instance(n) or {}).get("label") or n) for n in names}
+
+
+async def _voice_decide(text: str, channel: str, sender: str, source: str = "browser",
+                        metadata: dict | None = None) -> dict:
+    """Run one transcript through voice_gate; post it when it was said to an agent, stop an agent
+    on a stop word. Rejected text is not posted, stored or logged."""
+    import responder
+    import voice_gate
     spec = _voice_check_spec()
 
     def ask(prompt):
         return _voice_ask(spec, prompt) if spec else None
     try:
-        r = await asyncio.wait_for(asyncio.to_thread(voice_gate.decide, text, channel, here, ask, responder.named),
-                                   VOICE_CHECK_TIMEOUT + 2)
+        r = await asyncio.wait_for(asyncio.to_thread(voice_gate.decide, text, channel, _voice_here(channel), ask,
+                                                     responder.named, None, source), VOICE_CHECK_TIMEOUT + 2)
     except asyncio.TimeoutError:
-        r = {"accepted": False, "to": None, "reason": "decision_unavailable", "open": voice_gate.open_for(channel)}
+        r = {"accepted": False, "to": None, "reason": "decision_unavailable",
+             "open": voice_gate.open_for(channel, source=source)}
     if r["reason"] == "decision_unavailable" and not spec:
         r["notice"] = "Voice check unavailable: pick a voice check model in Settings > Voice"
     if r["reason"] == "stopped":
@@ -2741,10 +2741,210 @@ async def voice_utterance(request: Request):
         await broadcast_status()
     if r["accepted"]:
         out = text if _re.search(r"(?<![\w.])@[\w-]+", text) else f"@{r['to']} {text}"
-        msg = store.add(str(body.get("sender") or room_settings.get("username", "user")), out,
-                        channel=channel, metadata={"voice": True})
+        msg = store.add(sender, out, channel=channel, metadata={"voice": True, **(metadata or {}), "to": r["to"]})
         r["message_id"] = msg["id"]
     return r
+
+
+@app.post("/api/voice/utterance")
+async def voice_utterance(request: Request):
+    """Voice by name, no wake word. Body: {text, channel, sender?}. Accepted speech is posted as the
+    owner's message; anything else is dropped without a trace. -> {accepted, to, reason, open, message_id?}"""
+    body = await request.json()
+    text = str(body.get("text") or "").strip()[:2000]
+    if not text:
+        return JSONResponse({"error": "text is required"}, status_code=400)
+    return await _voice_decide(text, str(body.get("channel") or "general"),
+                               str(body.get("sender") or room_settings.get("username", "user")))
+
+
+# --- Voice devices (voice_devices.py): always-listening devices such as Echo Dots on TECHO5.
+# Every /api/device/* route checks the device's own Bearer key (the security middleware lets
+# them through without a browser session).
+
+DEVICE_MAX_BYTES = 2 * 1024 * 1024
+DEVICE_MAX_SECONDS = 30
+
+
+def _device(request: Request) -> dict | None:
+    import voice_devices
+    return voice_devices.authenticate(request.headers.get("authorization", ""))
+
+
+def _no_device():
+    return JSONResponse({"error": "missing or unknown device key (Authorization: Bearer <device key>)"}, status_code=401)
+
+
+async def device_listen(request: Request):
+    """One utterance from a device: a 16-bit mono WAV (Content-Type audio/wav) or JSON {text}.
+    -> {accepted, to, reason, open, message_id?}. Rejected speech is never echoed back or kept."""
+    import io
+    import wave
+    import voice
+    dev = _device(request)
+    if not dev:
+        return _no_device()
+    if "json" in request.headers.get("content-type", ""):
+        try:
+            text = str((await request.json()).get("text") or "")
+        except Exception:
+            return JSONResponse({"error": "bad JSON"}, status_code=400)
+        if len(text) > 2000:
+            return JSONResponse({"error": "text: at most 2000 characters"}, status_code=400)
+    else:
+        audio = await request.body()
+        if len(audio) > DEVICE_MAX_BYTES:
+            return JSONResponse({"error": "audio: at most 2 MB"}, status_code=413)
+        try:
+            with wave.open(io.BytesIO(audio)) as w:
+                ok = w.getsampwidth() == 2 and w.getnchannels() == 1
+                seconds = w.getnframes() / float(w.getframerate() or 1)
+        except Exception:
+            return JSONResponse({"error": "send a 16-bit mono WAV (audio/wav) or JSON {text}"}, status_code=400)
+        if not ok:
+            return JSONResponse({"error": "WAV must be 16-bit mono"}, status_code=400)
+        if seconds > DEVICE_MAX_SECONDS:
+            return JSONResponse({"error": f"audio: at most {DEVICE_MAX_SECONDS} s per utterance"}, status_code=413)
+        try:
+            text = await asyncio.to_thread(voice.transcribe, audio)
+        except Exception as exc:
+            log.warning("device %s: transcription failed: %s", dev["name"], str(exc)[:160])
+            return JSONResponse({"error": "transcription failed"}, status_code=502)
+    text = voice.clean_transcript(text or "").strip()
+    if not text or _re.fullmatch(r"[\[(].*[\])]", text):  # [BLANK_AUDIO], (noise)
+        return {"accepted": False, "to": None, "reason": "empty", "open": None}
+    channel = dev["channel"]
+    r = await _voice_decide(text, channel, room_settings.get("username", "user"), source=dev["name"],
+                            metadata={"device": dev["name"]})
+    log.info("device %s: %s", dev["name"], r["reason"])
+    return r
+
+
+async def device_reply(request: Request):
+    """Long-poll: the addressed agent's reply after the accepted message `after` (wait <= 30 s).
+    -> {text, speak, audio_url, message_id}, or {text: null} when none came in time."""
+    import voice
+    import voice_gate
+    dev = _device(request)
+    if not dev:
+        return _no_device()
+    try:
+        after = int(request.query_params.get("after", ""))
+        wait = max(0.0, min(float(request.query_params.get("wait", 25)), 30.0))
+    except ValueError:
+        return JSONResponse({"error": "after=<message id> is required"}, status_code=400)
+    channel = dev["channel"]
+    asked = next((m for m in store.get_recent(200, channel=channel) if m["id"] == after), None)
+    if not asked or (asked.get("metadata") or {}).get("device") != dev["name"]:
+        return JSONResponse({"error": "no such message from this device"}, status_code=404)
+    to = (asked.get("metadata") or {}).get("to")
+    deadline = asyncio.get_event_loop().time() + wait
+    while True:
+        reply = next((m for m in store.get_since(after, channel=channel)
+                      if m.get("sender") == to and m.get("type", "chat") == "chat" and m.get("thread") is None
+                      and m.get("text")), None)
+        if reply or asyncio.get_event_loop().time() >= deadline:
+            break
+        await asyncio.sleep(0.25)
+    if not reply:
+        return {"text": None, "speak": None, "audio_url": None, "message_id": None}
+    speak = voice.speakable(reply["text"])
+    voice_gate.spoke(channel, dev["name"], speak)  # its mic may hear this back
+    return {"text": reply["text"], "speak": speak, "audio_url": f"/api/device/audio/{reply['id']}",
+            "message_id": reply["id"]}
+
+
+async def device_audio(message_id: int, request: Request):
+    """Speech for an agent message in the device's channel, in that agent's voice. WAV when the
+    provider streams PCM; otherwise the provider's own format (see Content-Type)."""
+    import io
+    import wave
+    import voice
+    dev = _device(request)
+    if not dev:
+        return _no_device()
+    msg = next((m for m in store.get_recent(500, channel=dev["channel"]) if m["id"] == int(message_id)), None)
+    if not msg or not msg.get("text"):
+        return JSONResponse({"error": "no such message in this device's channel"}, status_code=404)
+    spec = (agent_manager.specs.get(msg["sender"]) if agent_manager else None) or {}
+    text = voice.speakable(msg["text"])
+    args = (text, spec.get("voice_provider"), spec.get("voice"), spec.get("voice_speed"))
+    try:
+        if voice.streams(spec.get("voice_provider")):
+            rate, chunks = await asyncio.to_thread(voice.speak_stream, *args)
+            pcm = await asyncio.to_thread(lambda: b"".join(chunks))
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(pcm)
+            audio, media = buf.getvalue(), "audio/wav"
+        else:
+            audio, media = await asyncio.to_thread(voice.speak, *args)
+    except Exception as exc:
+        return JSONResponse({"error": f"speech failed: {str(exc)[:200]}"}, status_code=502)
+    return Response(audio, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+async def device_played(request: Request):
+    """The device finished playing a reply: its follow-up window starts now."""
+    import voice_gate
+    dev = _device(request)
+    if not dev:
+        return _no_device()
+    voice_gate.played(dev["channel"], source=dev["name"])
+    return {"open": voice_gate.open_for(dev["channel"], source=dev["name"])}
+
+
+async def voice_devices_txt(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return Response(VOICE_DEVICES_DOC.format(base=base, max_s=DEVICE_MAX_SECONDS), media_type="text/plain")
+
+
+VOICE_DEVICES_DOC = """# AgentHub voice devices
+
+An always-listening device (e.g. an Echo Dot on TECHO5) sends every utterance here. AgentHub
+answers only speech said TO an agent: its name anywhere in the sentence, then follow-ups for
+30 s without the name. Talking about an agent, the device's own playback (echo) and the same
+sentence heard by two devices are ignored. Ignored speech is not posted, stored or logged.
+
+Auth: every call sends  Authorization: Bearer <device key>  (Settings > Voice > Devices; the
+key is shown once). Each device posts into its own channel, set there.
+
+## 1. Send one utterance (after your VAD ends a speech segment; don't record while playing)
+curl -s -X POST {base}/api/device/listen -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: audio/wav' --data-binary @utterance.wav
+WAV: 16-bit PCM, mono, any rate (16 kHz is plenty), at most {max_s} s and 2 MB.
+Or text you transcribed yourself: -H 'Content-Type: application/json' -d '{{"text": "..."}}'
+-> {{"accepted": true, "to": "margie", "reason": "named", "open": "margie", "message_id": 3501}}
+   reason: named | followup | stopped | no_name | about | not_for_agent | echo | duplicate |
+           empty | no_agents | decision_unavailable
+   "stopped": the user said stop/cancel to the open agent: stop your playback.
+
+## 2. Wait for the agent's reply (only after accepted)
+curl -s "{base}/api/device/reply?after=3501&wait=25" -H "Authorization: Bearer $KEY"
+-> {{"text": "...", "speak": "text to say (no links or code)", "audio_url": "/api/device/audio/3502",
+    "message_id": 3502}}   or {{"text": null}} when no reply came within wait (max 30 s): ask again.
+
+## 3. Get the speech
+curl -s {base}/api/device/audio/3502 -H "Authorization: Bearer $KEY" -o reply.wav
+Audio in the agent's own voice; check Content-Type (audio/wav, or the TTS provider's format).
+
+## 4. Say when playback ended (starts the 30 s follow-up window)
+curl -s -X POST {base}/api/device/played -H "Authorization: Bearer $KEY"
+
+Flow: listen -> (accepted) reply -> audio -> play -> played -> listen ...
+Keep the mic muted while playing, or AgentHub drops what it hears as echo.
+"""
+
+
+for _path, _fn, _methods in (("/api/device/listen", device_listen, ["POST"]),
+                             ("/api/device/reply", device_reply, ["GET"]),
+                             ("/api/device/audio/{message_id}", device_audio, ["GET"]),
+                             ("/api/device/played", device_played, ["POST"]),
+                             ("/voice-devices.txt", voice_devices_txt, ["GET"])):
+    app.add_api_route(_path, _fn, methods=_methods)
 
 
 @app.post("/api/voice/played")
