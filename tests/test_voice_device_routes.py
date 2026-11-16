@@ -93,6 +93,24 @@ class DeviceRoutes(unittest.TestCase):
         self.assertEqual(m["metadata"]["effort"], "none")
         self.assertEqual(voice_gate.open_for("home", source="office-dot"), "margie")
 
+    def test_passphrase_runs_the_held_action_and_is_never_posted(self):
+        import mcp_hub
+        import passphrase
+        passphrase.data_dir = voice_devices.data_dir
+        passphrase._held.clear()
+        passphrase.set_passphrase("blue bird")
+        ran = []
+        self.stack.enter_context(patch.object(mcp_hub, "call_tool", lambda srv, tool, args: (ran.append((tool, args)), "done")[1]))
+        passphrase.hold("home", "margie", {"name": "home_assistant"}, "intent__HassTurnOn", {"name": "Garage Door"})
+        self.transcripts.append("Blue bird.")
+        r = self.c.post("/api/device/listen?direct=1", content=wav(), headers={**self.auth, "Content-Type": "audio/wav"}).json()
+        self.assertEqual((r["accepted"], r["reason"]), (True, "passphrase"))
+        self.assertEqual(ran, [("intent__HassTurnOn", {"name": "Garage Door"})])
+        texts = " ".join(m["text"] for m in self.store.get_recent(10, channel="home"))
+        self.assertNotIn("blue", texts.lower())
+        self.assertIn("Passphrase accepted", texts)
+        self.assertFalse(passphrase.waiting("home"))
+
     def test_listen_text_body(self):
         r = self.c.post("/api/device/listen", json={"text": "Margie, what time is it?"}, headers=self.auth).json()
         self.assertTrue(r["accepted"])

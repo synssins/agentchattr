@@ -41,6 +41,8 @@ def setup(app_module, cfg: dict):
     data_dir = Path(cfg.get("server", {}).get("data_dir", "./data"))
     import voice_devices
     voice_devices.data_dir = data_dir
+    import passphrase
+    passphrase.data_dir = data_dir
     # Remote agents survive restarts: re-seed their bases so tokens resolve.
     for name, info in _load("remote_agents.json", {}).items():
         hub.registry.seed({name: {"label": info.get("label") or name, "color": info.get("color", "#64748b"),
@@ -96,6 +98,24 @@ async def _ensure_channel(channel: str):
     hub._save_settings()
     if hasattr(hub, "broadcast_settings"):
         await hub.broadcast_settings()
+
+
+@router.get("/api/admin/voice-passphrase")
+async def voice_passphrase_get():
+    import passphrase
+    return {"set": passphrase.configured()}
+
+
+@router.post("/api/admin/voice-passphrase")
+async def voice_passphrase_set(request: Request):
+    """{passphrase}: set it; empty clears it. Only a salted hash is kept."""
+    import passphrase
+    body = await request.json()
+    try:
+        passphrase.set_passphrase(str(body.get("passphrase") or ""))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return {"set": passphrase.configured()}
 
 
 @router.get("/api/admin/voice-devices")

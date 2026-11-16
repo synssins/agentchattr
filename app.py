@@ -2724,6 +2724,9 @@ async def _voice_decide(text: str, channel: str, sender: str, source: str = "bro
     on a stop word. Rejected text is not posted, stored or logged."""
     import responder
     import voice_gate
+    held = await _passphrase_said(text, channel, sender)
+    if held:
+        return held
     spec = _voice_check_spec()
 
     def ask(prompt):
@@ -2825,6 +2828,32 @@ async def device_listen(request: Request):
     return r
 
 
+def _passphrase_run(text: str, channel: str, sender: str) -> dict | None:
+    """Speech that carries the passphrase while an action waits for it on channel (passphrase.py): the held
+    action runs, the words are never posted, and the agent is told what happened so it can say so."""
+    import mcp_hub
+    import passphrase
+    if not passphrase.waiting(channel) or not passphrase.said(text):
+        return None
+    h = passphrase.take(channel)
+    if not h:
+        return None
+    try:
+        out = mcp_hub.call_tool(h["server"], h["tool"], h["args"])
+    except BaseException as exc:  # connection errors arrive as ExceptionGroups
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        out = f"error: {str(exc)[:200]}"
+    log.info("passphrase accepted in #%s: %s ran", channel, h["tool"])
+    note = f"@{h['agent']} (Passphrase accepted. The held action ran: {str(out)[:300]}) Say in one short sentence what was done."
+    msg = store.add(sender, note, channel=channel, metadata={"voice": True, "to": h["agent"], "effort": "none", "passphrase": True})
+    return {"accepted": True, "to": h["agent"], "reason": "passphrase", "open": None, "message_id": msg["id"]}
+
+
+async def _passphrase_said(text: str, channel: str, sender: str) -> dict | None:
+    return await asyncio.to_thread(_passphrase_run, text, channel, sender)
+
+
 def _device_direct(text: str, dev: dict) -> dict:
     """A turn the device opened itself (?direct=1: its wake word or a command word). The device already
     knows it was spoken to, so the name check is skipped: it goes to the agent the device's conversation
@@ -2834,6 +2863,9 @@ def _device_direct(text: str, dev: dict) -> dict:
     channel = dev["channel"]
     here = _voice_here(channel)
     agent = voice_gate.open_for(channel, source=dev["name"])
+    held = _passphrase_run(text, channel, room_settings.get("username", "user"))
+    if held:
+        return held
     if agent not in here:
         agent = min(here, default=None)
     if not agent:

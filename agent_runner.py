@@ -1224,7 +1224,19 @@ class Runner:
                 step_i = self._act(channel, {"k": "tool", "name": fn.get("name") or "?",
                                              "input": json.dumps(args, ensure_ascii=False)})
                 if fn.get("name") in mcp_names:
+                    import passphrase
                     srv, tool = mcp_names[fn["name"]]
+                    if passphrase.configured() and passphrase.protected(tool, args):
+                        # Opens part of the house: held until the passphrase is said (app.py runs it then).
+                        passphrase.hold(channel, self.name, srv, tool, args)
+                        log.info("%s: %s held for the passphrase", self.name, fn.get("name"))
+                        out = ("held: this opens, closes or unlocks part of the house and needs the household "
+                               "passphrase. Ask for the passphrase in one short sentence and stop. When it is "
+                               "said, the action runs by itself; do not call this tool again.")
+                        self._act(channel, {"k": "tool", "name": fn.get("name") or "?",
+                                            "input": json.dumps(args, ensure_ascii=False), "out": out}, step_i)
+                        msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": out})
+                        continue
                     try:
                         out = mcp_hub.call_tool(srv, tool, args)
                         made += [p for p in ATTACH_RE.findall(out) if p not in made]  # e.g. generated images

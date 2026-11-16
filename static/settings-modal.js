@@ -292,6 +292,25 @@
             try { await api('POST', '/api/voice/check-model', { server, model }); checkNote.textContent = 'Saved'; }
             catch (err) { checkNote.textContent = err.message; }
         });
+        // Passphrase for doors, locks and covers (passphrase.py): only a salted hash is kept
+        const pass = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Not set' });
+        const passNote = el('small', { text: '' });
+        const passSave = el('button', { type: 'button', class: 'agents-btn', text: 'Save' });
+        panel.append(el('h3', { text: 'Passphrase' }), el('p', { class: 'settings-intro' },
+            'An agent asks for this before it opens, closes or unlocks part of the house (garage doors, gates, locks, blinds, alarms). Say it within 30 s and the action runs; the words are never posted or kept. Empty and saved: no passphrase.'),
+            el('label', { class: 'agents-field' }, el('span', { text: 'Passphrase or PIN' }), pass, passSave, passNote));
+        (async () => {
+            try { if ((await api('GET', '/api/admin/voice-passphrase')).set) pass.placeholder = 'Set (type a new one to change it)'; }
+            catch (err) { passNote.textContent = err.message; }
+        })();
+        passSave.addEventListener('click', async () => {
+            try {
+                const r = await api('POST', '/api/admin/voice-passphrase', { passphrase: pass.value });
+                pass.value = '';
+                pass.placeholder = r.set ? 'Set (type a new one to change it)' : 'Not set';
+                passNote.textContent = r.set ? 'Saved' : 'Removed';
+            } catch (err) { passNote.textContent = err.message; }
+        });
         // Always-listening devices (Echo Dots on TECHO5, ...): voice_devices.py, /voice-devices.txt
         const devBox = el('div');
         panel.append(el('h3', { text: 'Devices' }), el('p', { class: 'settings-intro' },
