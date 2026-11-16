@@ -49,6 +49,16 @@ class VoiceDevices(unittest.TestCase):
         with self.assertRaises(ValueError):
             voice_devices.create("Bad Name!", "home")
 
+    def test_channel_names_follow_room_rules(self):
+        with self.assertRaises(ValueError):
+            voice_devices.create("dot", "office_dot")          # room channels: letters, digits, -
+        with self.assertRaises(ValueError):
+            voice_devices.create("dot", "a" * 21)              # room channels: at most 20
+        voice_devices.create("dot", "office")
+        self.assertFalse(voice_devices.set_channel("dot", "Bad_Name"))
+        self.assertTrue(voice_devices.set_channel("dot", "Kitchen"))   # lowercased
+        self.assertEqual(voice_devices.list_public()[0]["channel"], "kitchen")
+
     def test_set_channel(self):
         voice_devices.create("office-dot", "home")
         self.assertTrue(voice_devices.set_channel("office-dot", "office"))

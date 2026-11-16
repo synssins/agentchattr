@@ -26,6 +26,7 @@ from collections import deque
 WINDOW = 30.0
 ECHO_SECONDS = 60.0   # how long text spoken to a source can come back through its mic
 DEDUPE = 4.0          # two devices hearing one sentence
+ECHO_TAIL = 3.0       # after playback ends, its echo can still arrive this long
 STOP_RE = re.compile(r"^(stop|wait|cancel|never ?mind|hold on|shut up)[.!]*$", re.I)
 PROMPT = (
     "You gate a voice assistant room. The microphone hears everything said in a room. Decide whether "
@@ -71,9 +72,12 @@ def saw_reply(channel: str, agent: str, text: str, ts: float):
 
 
 def played(channel: str, now: float | None = None, source: str = "browser"):
-    """A reply finished playing on that source: the follow-up window starts now."""
+    """A reply finished playing on that source: the follow-up window starts now, and what it
+    played can't come back as echo after a short tail (the owner may repeat its words)."""
     now = time.time() if now is None else now
     with _lock:
+        for e in _spoken.get((channel, source), ()):
+            e[2] = min(e[2], now + ECHO_TAIL)
         c = _conv.get((channel, source))
         if c and c["until"] > now - WINDOW:
             c["until"] = max(c["until"], now + WINDOW)
@@ -84,7 +88,7 @@ def spoke(channel: str, source: str, text: str, now: float | None = None):
     now = time.time() if now is None else now
     with _lock:
         q = _spoken.setdefault((channel, source), deque(maxlen=20))
-        q.append((now, set(_words(text))))
+        q.append([now, set(_words(text)), now + ECHO_SECONDS])  # [spoken at, words, echo possible until]
 
 
 def _is_echo(channel: str, source: str, text: str, now: float) -> bool:
@@ -92,21 +96,26 @@ def _is_echo(channel: str, source: str, text: str, now: float) -> bool:
     if len(words) < 4:
         return False
     with _lock:
-        for ts, spoken in _spoken.get((channel, source), ()):
-            if now - ts <= ECHO_SECONDS and sum(w in spoken for w in words) / len(words) >= 0.6:
+        for ts, spoken, until in _spoken.get((channel, source), ()):
+            if ts <= now <= until and sum(w in spoken for w in words) / len(words) >= 0.6:
                 return True
     return False
 
 
+def _same_sentence(a: set, b: set) -> bool:
+    """Two mics rarely transcribe a sentence identically: most words in common is the same sentence."""
+    return a == b or (bool(a) and bool(b) and len(a & b) / max(len(a), len(b)) >= 0.8)
+
+
 def _is_duplicate(channel: str, source: str, text: str, now: float) -> bool:
-    norm = " ".join(_words(text))
+    words = set(_words(text))
     with _lock:
         q = _recent.setdefault(channel, deque(maxlen=50))
         while q and now - q[0][0] > DEDUPE:
             q.popleft()
-        dup = any(n == norm and src != source for _, n, src in q)
-        q.append((now, norm, source))
-    return dup and bool(norm)
+        dup = any(src != source and _same_sentence(w, words) for _, w, src in q)
+        q.append((now, words, source))
+    return dup and bool(words)
 
 
 def _accept(channel: str, agent: str, text: str, now: float, source: str):
@@ -157,8 +166,6 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
         return {"accepted": accepted, "to": to, "reason": reason, "open": open_for(channel, now, source)}
     if _is_echo(channel, source, text, now):
         return out(False, None, "echo")
-    if _is_duplicate(channel, source, text, now):
-        return out(False, None, "duplicate")
     if not here:
         return out(False, None, "no_agents")
     if current and STOP_RE.match(text):
@@ -166,6 +173,10 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
     names = [n for n in named(text, here) if n in here]
     if not names and not current:
         return out(False, None, "no_name")
+    # Only a sentence this source could post claims it: another device that would ignore it
+    # (no name, no conversation) must not make the right one drop it as a duplicate.
+    if _is_duplicate(channel, source, text, now):
+        return out(False, None, "duplicate")
     candidates = names or [current]
     convo = "\n".join(f"{'owner' if r == 'user' else current}: {t}" for r, t in _turns(channel, source)) if current else ""
     who = "\n".join(f"@{n}" + (f" (name: {here[n]})" if here[n] and here[n] != n else "") for n in candidates)

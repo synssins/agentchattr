@@ -21,6 +21,7 @@ from pathlib import Path
 data_dir = Path("./data")   # set by admin_api.setup
 FILE = "voice_devices.json"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+CHANNEL_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")  # the room's own rule for channel names (app.py)
 _lock = threading.RLock()
 
 
@@ -54,8 +55,8 @@ def create(name: str, channel: str) -> tuple[dict, str]:
     name, channel = str(name or "").strip().lower(), str(channel or "").strip().lower() or "home"
     if not NAME_RE.fullmatch(name):
         raise ValueError("name: 1-32 chars, lowercase letters, digits, - or _")
-    if not NAME_RE.fullmatch(channel):
-        raise ValueError("channel: 1-32 chars, lowercase letters, digits, - or _")
+    if not CHANNEL_RE.fullmatch(channel):
+        raise ValueError("channel: 1-20 chars, lowercase letters, digits or -")
     key = "vd-" + secrets.token_urlsafe(32)
     with _lock:
         items = _load()
@@ -82,7 +83,8 @@ def delete(name: str) -> bool:
 
 
 def set_channel(name: str, channel: str) -> bool:
-    if not NAME_RE.fullmatch(str(channel or "")):
+    channel = str(channel or "").strip().lower()
+    if not CHANNEL_RE.fullmatch(channel):
         return False
     with _lock:
         items = _load()

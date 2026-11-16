@@ -120,6 +120,26 @@ class Gate(unittest.TestCase):
                      responder.named, now=1070, source="office")
         self.assertNotEqual(r["reason"], "echo")
 
+    def d(self, text, src, t, to="jessica"):
+        return g.decide(text, "ch", HERE, self.ask_to(to), responder.named, now=t, source=src)
+
+    def test_followup_and_stop_survive_the_other_dot_hearing_them_first(self):
+        self.assertTrue(self.d("Jessica, turn off the lights.", "office", 1000)["accepted"])
+        self.assertEqual(self.d("And the fan too.", "kitchen", 1010.0)["reason"], "no_name")
+        self.assertEqual(self.d("And the fan too.", "office", 1010.3)["reason"], "followup")
+        self.assertEqual(self.d("stop", "kitchen", 1012.0)["reason"], "no_name")
+        self.assertEqual(self.d("stop", "office", 1012.3)["reason"], "stopped")
+
+    def test_slightly_different_transcripts_from_two_dots_are_one_sentence(self):
+        self.assertTrue(self.d("Jessica, what is the time in Tokyo right now?", "office", 1000)["accepted"])
+        self.assertEqual(self.d("jessica what is the time in tokyo now", "kitchen", 1001)["reason"], "duplicate")
+
+    def test_answer_after_playback_is_not_echo(self):
+        g.spoke("ch", "office", "Should I dim the office lights?", 1000)
+        self.assertEqual(self.d("should I dim the office lights jessica", "office", 1002)["reason"], "echo")  # still playing
+        g.played("ch", now=1004, source="office")
+        self.assertNotEqual(self.d("Yes, dim the office lights, Jessica.", "office", 1009)["reason"], "echo")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -123,7 +123,7 @@ async def voice_devices_patch(name: str, request: Request):
     body = await request.json()
     if not voice_devices.set_channel(name, str(body.get("channel") or "")):
         return JSONResponse({"error": "no such device, or a bad channel name"}, status_code=400)
-    await _ensure_channel(str(body["channel"]))
+    await _ensure_channel(str(body["channel"]).strip().lower())
     return {"ok": True}
 
 
