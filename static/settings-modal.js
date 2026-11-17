@@ -535,7 +535,7 @@
         const fieldsOf = [['name', 'Name'], ['base_url', 'Base URL', 'Ends in /v1.'], ['model', 'Model'], ['format', 'Format'],
             ['voices_url', 'Voices list URL'], ['clone_url', 'Voice upload URL', 'For cloning voices.'], ['default_voice', 'Default voice'],
             ['sample_rate', 'Sample rate', 'For streaming.'], ['capabilities_url', 'Parameters URL', 'Blank: the service\'s openapi.json.'],
-            ['tags', 'Emotion tags', 'Tags the engine performs, such as [laugh], [sigh]. Blank: ask the service. none: off.']];
+            ['tags', 'Emotion tags', 'Tags the engine performs inline, such as [laugh]. Agents with this voice are told to use them; they are spoken, not shown in chat. Unedited: the list the service reports. none: off.']];
         // Engine parameters: each service says which settings it takes; controls are drawn from that
         const caps = {};  // provider name -> promise of [{name, type, min, max, ...}]
         const paramControl = (spec, values) => {
@@ -611,10 +611,12 @@
                     if (opts.length) {  // the service (or the format list) says what can be chosen
                         inp = choice(r[k] || (k === 'format' ? 'mp3' : ''), opts, blank, (v) => { r[k] = v; });
                     } else {            // URLs and names; also voice and model while the service cannot be asked
-                        inp = el('input', { value: r[k] || '' });
+                        // Emotion tags: with no list of its own, the field shows what the service reports
+                        const live = k === 'tags' && !r.tags ? ((conf.tags_live || {})[r.name] || []).join(', ') : '';
+                        inp = el('input', { value: r[k] || live });
                         inp.addEventListener('input', () => { r[k] = inp.value; });
                     }
-                    box.body.append(field(label, inp, { hint }));
+                    box.body.append(field(label, inp, { hint, stack: k === 'tags' }));
                 }
                 const st = el('input', { type: 'checkbox', checked: !!r.stream });
                 st.addEventListener('change', () => { r.stream = st.checked; });

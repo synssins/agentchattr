@@ -2540,7 +2540,9 @@ def _voice_public(conf: dict) -> dict:
 @app.get("/api/voice/config")
 async def voice_config():
     import voice
-    return {**_voice_public(voice.load()), "voices": await asyncio.to_thread(voice.voices)}
+    conf = voice.load()
+    live = await asyncio.to_thread(lambda: {p["name"]: voice.tags(p) for p in conf["providers"]})
+    return {**_voice_public(conf), "voices": await asyncio.to_thread(voice.voices), "tags_live": live}
 
 
 @app.post("/api/voice/config")
