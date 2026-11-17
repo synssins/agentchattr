@@ -230,6 +230,14 @@ def set_effort(channel: str, effort: str | None):
 
 
 MAX_TOOL_STEPS = 40        # tool rounds per turn for API agents; per-agent "max_tool_steps" overrides
+# With "require_tool" on, the first step must be a tool call. This one lets conversation be that call.
+ANSWER_TOOL = {"type": "function", "function": {
+    "name": "answer",
+    "description": ("Reply to the person without doing or looking up anything. Only for conversation that needs "
+                    "no action and no fresh information. Never use it to say something was done, switched, set "
+                    "or checked: to do or check something, call the tool that does it first."),
+    "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "The reply."}},
+                   "required": ["text"]}}}
 MAX_IMAGES = 3              # newest images sent inline to API agents per turn
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 SPILL_DIR = Path.home() / ".cache" / "agenthub" / "mcp-output"   # outside the data dir, so read_file works
@@ -1147,6 +1155,8 @@ class Runner:
         if spec.get("api_format") != "anthropic":
             mcp_specs, mcp_names = mcp_hub.tool_specs_for(self.name)
             tools = agent_tools.tool_specs(perm, allowed, memory=memory.size(spec) > 0) + mcp_specs
+            if spec.get("require_tool"):  # talk needs no lookup: answering is a tool too, and ends the turn
+                tools = tools + [ANSWER_TOOL]
         env = dict(os.environ)
         env.update(admin_api.secrets_for(self.name))
         runner = agent_tools.ToolRunner(spec.get("cwd") or "~", perm, allowed, env,
@@ -1226,6 +1236,14 @@ class Runner:
                 continue
             if not calls or self.stop.is_set():
                 return with_files(text)
+            if len(calls) == 1 and calls[0].get("function", {}).get("name") == "answer" and spec.get("require_tool"):
+                try:
+                    told = json.loads(calls[0]["function"].get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    told = {}
+                said_text = str(told.get("text") or "").strip() if isinstance(told, dict) else ""
+                if said_text:
+                    return with_files(said_text)
             # keep reasoning_details: Gemini (via OpenRouter) needs its thought signatures back
             msgs.append({k: v for k, v in reply.items() if k in ("content", "tool_calls", "reasoning_details")}
                         | {"role": "assistant", "content": text, "tool_calls": calls})
