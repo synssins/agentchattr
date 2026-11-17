@@ -1097,8 +1097,13 @@ class Runner:
             transcript = "\n".join(f"#{m['id']} {m['sender']}: {m.get('text', '')}" for m in new)[-MEMORY_INPUT:]
             prompt = f"Earlier memory:\n{mem.get('text') or '(none)'}\n\nNew messages:\n{transcript}"
             try:
-                text = (call_api_message(self.spec, MEMORY_PROMPT.format(name=self.name),
-                                         [{"role": "user", "content": prompt}]).get("content") or "")
+                ask = (self.spec, MEMORY_PROMPT.format(name=self.name), [{"role": "user", "content": prompt}])
+                try:  # thinking off: with it on, the summary took a minute on the GPU voice turns wait for
+                    text = call_api_message(*ask, effort="none").get("content") or ""
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in (400, 422):
+                        raise
+                    text = call_api_message(*ask).get("content") or ""
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
             except Exception as exc:  # memory is best effort; the messages stay in the log
                 log.warning("%s: compaction failed: %s", self.name, exc)
