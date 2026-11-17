@@ -28,6 +28,7 @@
             { id: 'llms', label: 'LLMs', keys: 'llm server model openrouter openai anthropic gemini base url key provider', render: renderLlms },
             { id: 'mcp', label: 'MCP servers', keys: 'tools tool server oauth stdio http sign in', render: renderMcp },
             { id: 'secrets', label: 'Secrets', keys: 'token tokens environment variable env github key password', render: renderSecrets },
+            { id: 'mqtt', label: 'MQTT', keys: 'mqtt broker home assistant state emotion face display publish topic', render: renderMqtt },
         ] },
         { id: 'voice', label: 'Voice', pages: [
             { id: 'voice', label: 'Conversation', keys: 'passphrase pin lock door garage barge-in interrupt named wake word voice check model mic microphone typing hands-free', render: renderVoice },
@@ -641,13 +642,26 @@
         const addRow = () => { const r = { name: '', base_url: '', format: 'mp3' }; rows.push(r); openRows.add(r); draw(); };
         draw();
         const cacheMb = el('input', { type: 'number', min: '0', max: '100000', value: conf.cache_mb ?? 512 });
+        // Tags added without the agent choosing one (voice.rule_tag)
+        const tr = conf.tag_rules || {};
+        const everyTag = [...new Set(Object.values(conf.tags_live || {}).flat())];
+        const tagPick = (cur) => choice(cur || '', everyTag, 'None', () => {});
+        const trFailed = tagPick(tr.failed), trQuiet = tagPick(tr.quiet);
+        const hour = (v) => el('input', { type: 'number', min: '0', max: '23', value: v, 'aria-label': 'Hour' });
+        const qFrom = hour(tr.quiet_from ?? 22), qTo = hour(tr.quiet_to ?? 7);
+        const rulesGroup = group('Emotion rules', { id: 'settings-voice-tagrules', open: false, note: 'Tags added when the agent chose none' },
+            field('After a failed action', trFailed, { hint: 'Put in front of a reply whose last tool call failed.' }),
+            field('In quiet hours', trQuiet, { hint: 'Put in front of every reply during the hours below.' }),
+            field('Quiet hours', el('div', { class: 'ui-actions' }, qFrom, el('span', { text: 'to' }), qTo), { hint: 'Hours of the day, 0 to 23, server time.' }));
         body.append(
             card(field('Default provider', def, { hint: 'Used by agents that have not picked one.' }),
                 field('Saved audio (MB)', cacheMb, { hint: 'Sentences read aloud are kept on the server, so a replay plays at once. The oldest are removed when this is full. 0 turns it off.' })),
             list,
+            rulesGroup,
             actions(btn('Add provider', addRow),
                 btn('Save speech providers', guard(async () => {
-                    await saveVoice(conf, { providers: rows, default_provider: def.value, cache_mb: cacheMb.value });
+                    await saveVoice(conf, { providers: rows, default_provider: def.value, cache_mb: cacheMb.value,
+                        tag_rules: { failed: trFailed.value, quiet: trQuiet.value, quiet_from: qFrom.value, quiet_to: qTo.value } });
                     refresh('voice-providers');
                 }), 'primary')));
     }
@@ -1149,6 +1163,41 @@
                 await api('POST', '/api/admin/irc/password', {});
                 refresh('irc');
             }))));
+    }
+
+    // Agent state and reply emotion for displays and automations (mqtt_out.py)
+    async function renderMqtt(body) {
+        heading(body, 'MQTT', 'Publishes each agent\'s state and the emotion of its replies to a broker, for displays and automations.');
+        const m = await load(body, api('GET', '/api/admin/mqtt'));
+        const on = el('input', { type: 'checkbox', checked: m.enabled });
+        const host = el('input', { value: m.host, placeholder: 'e.g. 192.168.1.10' });
+        const port = el('input', { type: 'number', min: '1', max: '65535', value: m.port });
+        const user = el('input', { value: m.username, autocomplete: 'off' });
+        const pass = el('input', { type: 'password', autocomplete: 'new-password', placeholder: m.has_password ? 'Stored. Leave blank to keep it.' : 'None' });
+        const prefix = el('input', { value: m.prefix });
+        const note = el('p', { class: m.error ? 'settings-warn' : 'settings-note', role: 'status', text: m.error ? `Last publish failed: ${m.error}` : '' });
+        const send = (test) => api('POST', '/api/admin/mqtt', { enabled: on.checked, host: host.value, port: port.value,
+            username: user.value, password: pass.value, prefix: prefix.value, test });
+        const topics = el('code', { class: 'settings-value' });
+        const showTopics = () => { const p = prefix.value.trim() || 'agenthub'; topics.textContent = `${p}/<agent>/state · ${p}/<agent>/emotion · ${p}/<agent>/status`; };
+        prefix.addEventListener('input', showTopics);
+        showTopics();
+        body.append(
+            card(field('Publish to MQTT', on, { hint: 'Off: nothing is sent.' }),
+                field('Broker address', host), field('Port', port),
+                field('User name', user, { hint: 'Blank: no sign-in.' }), field('Password', pass, { hint: 'Write-only.' }),
+                field('Topic prefix', prefix),
+                field('Topics', topics, { stack: true, hint: 'state: idle, busy or offline. emotion: the tag of the last reply without brackets, or neutral. status: both as JSON. All retained.' })),
+            note,
+            actions(btn('Send a test message', async () => {
+                    note.className = 'settings-note'; note.textContent = 'Sending…';
+                    try {
+                        const r = await send(true);
+                        note.className = r.test === 'ok' ? 'settings-note' : 'settings-warn';
+                        note.textContent = r.test === 'ok' ? `Saved. The broker accepted a message on ${r.prefix}/hub.` : `Saved, but the broker refused: ${r.test}`;
+                    } catch (err) { note.className = 'settings-warn'; note.textContent = err.message; }
+                }),
+                btn('Save', guard(async () => { await send(false); refresh('mqtt'); }), 'primary')));
     }
 
     window.SettingsModal = { open, close };

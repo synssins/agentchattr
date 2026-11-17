@@ -729,7 +729,7 @@ class Runner:
             parts.append("Room rules: " + "; ".join(rules))
         try:
             import voice
-            said = voice.tags_prompt(self.spec.get("voice_provider"))
+            said = voice.tags_prompt(self.spec.get("voice_provider"), self.spec.get("tag_guide") or "")
         except Exception:
             said = ""
         if said:
@@ -840,6 +840,18 @@ class Runner:
             self._cache_state("seen")[f"{channel}:{thread}"] = seen
             if hasattr(self.m, "save_state"):
                 self.m.save_state()
+        said = []
+        if reply and reply != NO_REPLY:
+            try:  # emotion: the rules add a tag when the agent chose none; MQTT hears which one it is
+                import mqtt_out
+                import voice
+                tools = [x for x in (self.__dict__.get("activity") or []) if x.get("k") == "tool"]
+                who = self.spec.get("voice_provider")
+                reply = voice.rule_tag(reply, who, failed=bool(tools and tools[-1].get("err")))
+                said = voice.spoken_tags(reply, who)
+                mqtt_out.emotion(self.name, said, channel)
+            except Exception:
+                log.exception("%s: emotion tags", self.name)
         if (reply and reply != NO_REPLY) or attachments:
             meta = {"stream": self.stream_id}
             if seen is not None:

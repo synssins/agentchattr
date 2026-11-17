@@ -165,14 +165,53 @@ def all_tags() -> list[str]:
     return out
 
 
-def tags_prompt(provider_name: str | None) -> str:
-    """The line of an agent's system prompt about emotion tags ("" when its voice has none)."""
+# When a tag fits: the default guidance in an agent's prompt (its own "tag_guide" replaces it)
+GUIDE = {"[chuckle]": "a light joke or teasing", "[laugh]": "something really funny",
+         "[happy]": "good news or a task that went well", "[sigh]": "bad news or an action that failed",
+         "[gasp]": "a surprising result", "[whispering]": "a secret, or when asked to be quiet",
+         "[sarcastic]": "a dry remark", "[groan]": "a bad pun or a tedious chore"}
+# Tags AgentHub adds by itself: after a failed action, and in quiet hours (voice.json "tag_rules")
+RULES = {"failed": "[sigh]", "quiet": "", "quiet_from": 22, "quiet_to": 7}
+
+
+def tags_prompt(provider_name: str | None, guide: str = "") -> str:
+    """The lines of an agent's system prompt about emotion tags ("" when its voice has none).
+    guide: the agent's own guidance on when to use which tag; blank = the default table."""
     have = tags(provider(provider_name))
     if not have:
         return ""
+    known = [t for t in have if t in GUIDE]
+    hints = (guide or "").strip()[:800] or (
+        "; ".join(f"{t} for {GUIDE[t]}" for t in known)
+        + ("; the others only when the moment clearly calls for them" if len(known) < len(have) else ""))
     return ("Your replies can be read aloud. The voice performs these tags as sounds or moods: "
             + " ".join(have) + ". Where it fits the moment, put one inline in your text, exactly as "
-            "written; most sentences need none. Use no other tags in square brackets.")
+            "written; most sentences need none. Use no other tags in square brackets."
+            + (f" When to use them: {hints}." if hints else ""))
+
+
+def rules() -> dict:
+    return {**RULES, **(load().get("tag_rules") or {})}
+
+
+def spoken_tags(text: str, provider_name: str | None) -> list[str]:
+    """The tags in a reply that its voice performs, in order."""
+    have = set(tags(provider(provider_name)))
+    return [t for t in (m.lower() for m in TAG_RE.findall(re.sub(r"`[^`]*`", " ", CODE_RE.sub(" ", text or "")))) if t in have]
+
+
+def rule_tag(text: str, provider_name: str | None, failed: bool, hour: int | None = None) -> str:
+    """A reply with the tag the rules call for put in front: after a failed action, or in quiet
+    hours. Unchanged when the agent chose a tag itself or the voice does not perform that tag."""
+    have = tags(provider(provider_name))
+    if not have or not text or spoken_tags(text, provider_name):
+        return text
+    r = rules()
+    hour = time.localtime().tm_hour if hour is None else hour
+    a, b = int(r.get("quiet_from") or 0), int(r.get("quiet_to") or 0)
+    quiet = (a <= hour < b) if a <= b else (hour >= a or hour < b)
+    pick = (r.get("failed") if failed else "") or (r.get("quiet") if quiet else "")
+    return f"{pick} {text}" if pick in have else text
 
 
 # ---------------------------------------------------------------- engine parameters

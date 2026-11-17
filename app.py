@@ -1066,6 +1066,11 @@ async def broadcast(msg: dict):
 async def broadcast_status():
     status = agents.get_status()
     status["paused"] = any(router.is_paused(ch) for ch in room_settings.get("channels", ["general"]))
+    try:
+        import mqtt_out
+        mqtt_out.states(status)
+    except Exception:
+        log.exception("MQTT state")
     data = json.dumps({"type": "status", "data": status})
     dead = set()
     for client in list(ws_clients):
@@ -2542,7 +2547,8 @@ async def voice_config():
     import voice
     conf = voice.load()
     live = await asyncio.to_thread(lambda: {p["name"]: voice.tags(p) for p in conf["providers"]})
-    return {**_voice_public(conf), "voices": await asyncio.to_thread(voice.voices), "tags_live": live}
+    return {**_voice_public(conf), "voices": await asyncio.to_thread(voice.voices), "tags_live": live,
+            "tag_rules": voice.rules(), "tag_guide": voice.GUIDE}
 
 
 @app.post("/api/voice/config")
@@ -2585,6 +2591,11 @@ async def voice_config_save(request: Request):
     conf["default_provider"] = body.get("default_provider") if body.get("default_provider") in names else names[0]
     if str(body.get("cache_mb", "")).isdigit():
         conf["cache_mb"] = min(int(body["cache_mb"]), 100000)
+    if isinstance(body.get("tag_rules"), dict):  # tags AgentHub adds itself (voice.rule_tag)
+        tr, hours = body["tag_rules"], lambda v, d: int(v) if str(v).isdigit() and int(v) < 24 else d
+        conf["tag_rules"] = {"failed": (voice.parse_tags(tr.get("failed")) or [""])[0],
+                             "quiet": (voice.parse_tags(tr.get("quiet")) or [""])[0],
+                             "quiet_from": hours(tr.get("quiet_from"), 22), "quiet_to": hours(tr.get("quiet_to"), 7)}
     if isinstance(body.get("stt"), dict) and ":" in str(body["stt"].get("wyoming", "")):
         conf["stt"] = {"wyoming": str(body["stt"]["wyoming"]).strip(), "language": str(body["stt"].get("language") or "en")[:8]}
     voice.save(conf)

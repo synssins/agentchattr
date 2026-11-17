@@ -487,10 +487,13 @@
             F('Working directory', cwd, 'Where the agent reads, edits and runs things.'),
             F('Allowed commands', allowedCmds,
                 'Comma-separated programs allowed even below Full access, for skills that wrap a CLI like slop-chop. Not supported for Antigravity.'));
+        const tagGuide = el('textarea', { rows: 3, maxlength: '800', placeholder: 'e.g. [chuckle] for teasing; [sigh] when something fails; never [angry]' });
+        tagGuide.value = a.tag_guide || '';
         const gVoice = group('Voice and sound', { id: 'agent-voice', open: false, note: '…' },
             F('Voice provider', vProvider, 'Used for read aloud and conversations. Providers and cloned voices are managed in Settings > Voice.'),
             F('Voice', vVoice),
             F('Speed', vSpeed, 'From 0.5 to 2; blank is 1.0.'),
+            F('Emotion guidance', tagGuide, 'When this agent uses which emotion tag, for voices that perform tags. Blank: the standard guidance.', true),
             under(F('Preview', vPreview, 'Plays a short sample with the provider, voice and speed above.'), vPreviewMsg),
             F('Notification sound', sound, 'Plays for this agent\'s messages, in this browser.'));
         const gChannels = group('Channels', { id: 'agent-channels', open: false, note: '…' },
@@ -570,7 +573,7 @@
                 channels: chanBoxes.filter(x => x.cb.checked).map(x => x.c),
                 cwd: cwd.value.trim(), permissions: perm.value,
                 allowed_commands: allowedCmds.value.split(',').map(x => x.trim()).filter(Boolean),
-                voice_provider: vProvider.value, voice: vVoice.value, voice_speed: Number(vSpeed.value) || null,
+                voice_provider: vProvider.value, voice: vVoice.value, voice_speed: Number(vSpeed.value) || null, tag_guide: tagGuide.value.trim(),
                 effort: effort.value || null,
                 memory_size: memSize.value === '' ? null : Number(memSize.value),
             };

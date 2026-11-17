@@ -41,6 +41,8 @@ def setup(app_module, cfg: dict):
     data_dir = Path(cfg.get("server", {}).get("data_dir", "./data"))
     import voice_devices
     voice_devices.data_dir = data_dir
+    import mqtt_out
+    mqtt_out.data_dir = data_dir
     import passphrase
     passphrase.data_dir = data_dir
     import voice_dots
@@ -868,6 +870,40 @@ async def metrics_get(hours: float = 24):
 
 
 # ---------------------------------------------------------------- IRC
+
+# ---- MQTT: agent state and reply emotion for displays and automations (mqtt_out.py)
+
+def _mqtt_public(conf: dict) -> dict:
+    import mqtt_out
+    return {**{k: v for k, v in conf.items() if k != "password"}, "has_password": bool(conf.get("password")),
+            "error": mqtt_out.last_error}
+
+
+@router.get("/api/admin/mqtt")
+async def mqtt_get():
+    import mqtt_out
+    return _mqtt_public(mqtt_out.load())
+
+
+@router.post("/api/admin/mqtt")
+async def mqtt_set(request: Request):
+    """Body: {enabled, host, port, username, password?, prefix, test?}. A blank password keeps the stored one."""
+    import mqtt_out
+    body = await request.json()
+    try:
+        conf = mqtt_out.save(body)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "the port is a number from 1 to 65535"}, status_code=400)
+    out = _mqtt_public(conf)
+    if body.get("test"):
+        if not conf["host"]:
+            return JSONResponse({"error": "enter the broker's address first"}, status_code=400)
+        out["test"] = await asyncio.to_thread(mqtt_out.test, conf) or "ok"
+    elif conf["enabled"]:
+        import app
+        await app.broadcast_status()   # the current states go out at once
+    return out
+
 
 @router.get("/api/admin/irc")
 async def irc_get(request: Request):
