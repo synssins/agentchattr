@@ -47,6 +47,15 @@ class Voice(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_emotion_tags_kept_only_when_the_engine_has_them(self):
+        t = "Well [Laugh] that worked. [sighs] Next [1] item [not a tag at all, far too long to be one]."
+        self.assertEqual(voice.speakable(t, ["[laugh]"]), "Well [laugh] that worked. Next [1] item [not a tag at all, far too long to be one].")
+        self.assertEqual(voice.speakable(t, []), "Well that worked. Next [1] item [not a tag at all, far too long to be one].")
+        self.assertIn("[sighs]", voice.speakable(t))  # no engine named: left alone
+        self.assertEqual(voice.parse_tags("[Laugh], sigh\n[x]; bad!,[laugh]"), ["[laugh]", "[sigh]"])
+        self.assertEqual(voice.tags({"tags": []}), [])
+        self.assertEqual(voice.tags({"base_url": "http://127.0.0.1:9/v1"}), [])  # nothing listening: none
+
     def test_speakable_drops_code_links_and_markup(self):
         t = voice.speakable("Done **now**:\n```py\nx = 1\n```\nSee https://a.b/c and @bob [docs](http://d) [artifact:abc123]")
         self.assertEqual(t, "Done now : (code block) See and bob (artifact)")  # links are not read aloud
@@ -86,7 +95,7 @@ class Voice(unittest.TestCase):
                 pass
         srv = HTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.handle_request, daemon=True).start()
-        voice.save({**voice.load(), "providers": [{"name": "T", "base_url": f"http://127.0.0.1:{srv.server_port}/v1", "stream": True}],
+        voice.save({**voice.load(), "providers": [{"name": "T", "base_url": f"http://127.0.0.1:{srv.server_port}/v1", "stream": True, "tags": []}],
                     "default_provider": "T"})
         self.assertTrue(voice.streams(None))
         rate, chunks = voice.speak_stream("Hello there.", None, "Jessica")
@@ -153,7 +162,7 @@ class Voice(unittest.TestCase):
         hits = []
         base = self.serve({"/v1/audio/speech": ("audio/wav", b"RIFFaudio")}, hits)
         voice.save({**voice.load(), "default_provider": "P", "providers": [
-            {"name": "P", "base_url": base + "/v1", "format": "wav", "parameters": {"exaggeration": 0.7, "voice": "x"}}]})
+            {"name": "P", "base_url": base + "/v1", "format": "wav", "tags": [], "parameters": {"exaggeration": 0.7, "voice": "x"}}]})
         self.assertEqual(voice.speak("Hello there.", None, "Nora"), (b"RIFFaudio", "audio/wav"))
         self.assertEqual(hits[0][1], {"exaggeration": 0.7, "input": "Hello there.", "voice": "Nora", "response_format": "wav"})
         self.assertEqual(voice.speak("Hello there.", None, "Nora"), (b"RIFFaudio", "audio/wav"))
@@ -169,7 +178,7 @@ class Voice(unittest.TestCase):
         hits = []
         base = self.serve({"/v1/audio/speech": ("audio/pcm", b"\x01\x00" * 300)}, hits)
         voice.save({**voice.load(), "default_provider": "S", "providers": [
-            {"name": "S", "base_url": base + "/v1", "stream": True, "sample_rate": 16000}]})
+            {"name": "S", "base_url": base + "/v1", "stream": True, "tags": [], "sample_rate": 16000}]})
         rate, chunks = voice.speak_stream("One.", None, "v")
         next(chunks)
         chunks.close()                                       # the listener stopped early: nothing saved

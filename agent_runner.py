@@ -727,6 +727,13 @@ class Runner:
             rules = []
         if rules:
             parts.append("Room rules: " + "; ".join(rules))
+        try:
+            import voice
+            said = voice.tags_prompt(self.spec.get("voice_provider"))
+        except Exception:
+            said = ""
+        if said:
+            parts.append(said)
         import memory  # last: a new note changes only the end of the prompt, the rest stays cached
         mem = memory.prompt(self.name, memory.size(self.spec), tools=self._has_tools())
         if mem:

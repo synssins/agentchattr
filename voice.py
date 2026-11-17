@@ -21,6 +21,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,8 +104,14 @@ def voices() -> dict:
 CODE_RE = re.compile(r"```.*?```", re.S)
 
 
-def speakable(text: str) -> str:
-    """Chat text -> what to read aloud: no code, artifacts, attachments, links or markdown."""
+TAG_RE = re.compile(r"\[[A-Za-z][A-Za-z ]{1,23}\]")   # [laugh], [whispering]: an emotion tag for the speech engine
+_tags: dict[str, tuple[float, list[str]]] = {}          # base_url -> (asked at, tags)
+
+
+def speakable(text: str, keep=None) -> str:
+    """Chat text -> what to read aloud: no code, artifacts, attachments, links or markdown.
+    keep: the emotion tags the engine performs; every other [tag] is removed so it is never
+    read out as a word. None leaves tags alone."""
     t = CODE_RE.sub(" (code block) ", text or "")
     t = re.sub(r"\[artifact:[^\]]+\]", " (artifact) ", t)
     t = re.sub(r"\[attach(?:ed)?[^\]]*\]", " ", t)
@@ -112,8 +119,52 @@ def speakable(text: str) -> str:
     t = re.sub(r"!?\[[^\]]*\]\([^)]*\)", " ", t)              # links and images are for the screen only
     t = re.sub(r"https?://\S+", " ", t)
     t = re.sub(r"(^|\s)@([\w-]+)", r"\1\2", t)                 # @name -> name
+    if keep is not None:
+        ok = {k.lower() for k in keep}
+        t = TAG_RE.sub(lambda m: m.group(0).lower() if m.group(0).lower() in ok else " ", t)
     t = re.sub(r"[*_#>|~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def parse_tags(value) -> list[str]:
+    """"[laugh], sigh" or a list -> ["[laugh]", "[sigh]"] (lower case, valid tags only, max 40)."""
+    items = value if isinstance(value, list) else re.split(r"[,\n]+", str(value or ""))
+    out = []
+    for x in items:
+        tag = "[" + str(x).strip().strip("[]").strip().lower() + "]"
+        if TAG_RE.fullmatch(tag) and tag not in out:
+            out.append(tag)
+    return out[:40]
+
+
+def tags(p: dict) -> list[str]:
+    """The emotion tags a provider's engine performs inline in the text. The provider's own
+    "tags" list wins (an empty list = none); without one the service is asked at /api/tags
+    (a JSON list, as turbo-stream publishes) and the answer is kept for ten minutes."""
+    if isinstance(p.get("tags"), list):
+        return parse_tags(p["tags"])
+    url = p.get("base_url", "")
+    hit = _tags.get(url)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    try:
+        u = urllib.parse.urlsplit(url)
+        got = _get(f"{u.scheme}://{u.netloc}/api/tags", p.get("api_key", ""), timeout=3)
+        out = parse_tags(got) if isinstance(got, list) else []
+    except Exception:
+        out = []   # no such list (or the service is down): no tags
+    _tags[url] = (time.time(), out)
+    return out
+
+
+def tags_prompt(provider_name: str | None) -> str:
+    """The line of an agent's system prompt about emotion tags ("" when its voice has none)."""
+    have = tags(provider(provider_name))
+    if not have:
+        return ""
+    return ("Your replies can be read aloud. The voice performs these tags as sounds or moods: "
+            + " ".join(have) + ". Where it fits the moment, put one inline in your text, exactly as "
+            "written; most sentences need none. Use no other tags in square brackets.")
 
 
 # ---------------------------------------------------------------- engine parameters
@@ -231,7 +282,7 @@ def _request(text: str, provider_name: str | None, voice: str | None, speed: flo
              **extra) -> tuple[dict, dict, urllib.request.Request]:
     """-> (provider, request body, the /audio/speech request)."""
     p = provider(provider_name)
-    text = speakable(text)[:3000]
+    text = speakable(text, tags(p))[:3000]
     if not text:
         raise ValueError("nothing to read aloud")
     body = {**(p.get("parameters") or {}), "input": text,
