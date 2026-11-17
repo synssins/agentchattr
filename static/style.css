@@ -1,5 +1,6 @@
 /* AgentHub design tokens. Colour comes from the active theme on <html data-theme>;
-   charcoal is the default. Each theme fixes its own accent. */
+   charcoal is the default. Each theme fixes its own accent. The theme list (id, label,
+   light or dark) is THEME_LIST in chat.js; keep the two in step. */
 
 :root,
 [data-theme="charcoal"] {
@@ -100,6 +101,150 @@
     --user-color: #24578c;
     --tint: #000000;
     --shadow-rgb: 60, 50, 30;
+}
+
+[data-theme="slate"] {
+    color-scheme: dark;
+    --bg: #16181d;
+    --bg-header: #1a1d23;
+    --bg-input: #21252d;
+    --bg-msg: #1c2027;
+    --bg-msg-hover: #232831;
+    --bg-elevated: #272c36;
+    --code-bg: #111317;
+    --border: #2d323c;
+    --border-strong: #3e4552;
+    --text: #d3d7df;
+    --text-strong: #f2f4f7;
+    --text-muted: #e2e5eb;
+    --text-dim: #8d94a3;
+    --text-system: #757c8a;
+    /* Accent: indigo */
+    --accent: #8b93f0;
+    --text-on-accent: #0e1030;
+    --user-color: #a9aff5;
+    --tint: #ffffff;
+    --shadow-rgb: 0, 0, 0;
+}
+
+[data-theme="forest"] {
+    color-scheme: dark;
+    --bg: #121815;
+    --bg-header: #161d19;
+    --bg-input: #1c2520;
+    --bg-msg: #18201c;
+    --bg-msg-hover: #1e2823;
+    --bg-elevated: #222d27;
+    --code-bg: #0d1210;
+    --border: #28342d;
+    --border-strong: #38473e;
+    --text: #d0d9d3;
+    --text-strong: #f0f5f2;
+    --text-muted: #dfe7e2;
+    --text-dim: #88988f;
+    --text-system: #718077;
+    /* Accent: moss green */
+    --accent: #5fbf8f;
+    --text-on-accent: #06180f;
+    --user-color: #86d3aa;
+    --tint: #ffffff;
+    --shadow-rgb: 0, 0, 0;
+}
+
+[data-theme="plum"] {
+    color-scheme: dark;
+    --bg: #18151b;
+    --bg-header: #1d1921;
+    --bg-input: #251f2a;
+    --bg-msg: #201b24;
+    --bg-msg-hover: #27212d;
+    --bg-elevated: #2c2532;
+    --code-bg: #131016;
+    --border: #332b3a;
+    --border-strong: #463c4f;
+    --text: #d9d3de;
+    --text-strong: #f5f1f8;
+    --text-muted: #e7e1ec;
+    --text-dim: #978d9f;
+    --text-system: #7f7687;
+    /* Accent: orchid */
+    --accent: #d77fb0;
+    --text-on-accent: #220a17;
+    --user-color: #e6a3c7;
+    --tint: #ffffff;
+    --shadow-rgb: 0, 0, 0;
+}
+
+[data-theme="contrast"] {
+    color-scheme: dark;
+    --bg: #000000;
+    --bg-header: #000000;
+    --bg-input: #0d0d0d;
+    --bg-msg: #080808;
+    --bg-msg-hover: #141414;
+    --bg-elevated: #161616;
+    --code-bg: #000000;
+    --border: #4d4d4d;
+    --border-strong: #7a7a7a;
+    --text: #f2f2f2;
+    --text-strong: #ffffff;
+    --text-muted: #ffffff;
+    --text-dim: #bdbdbd;
+    --text-system: #a8a8a8;
+    /* Accent: signal yellow (high contrast) */
+    --accent: #ffd24a;
+    --text-on-accent: #000000;
+    --user-color: #ffe08a;
+    --tint: #ffffff;
+    --shadow-rgb: 0, 0, 0;
+}
+
+[data-theme="paper"] {
+    color-scheme: light;
+    --bg: #f6f1e7;
+    --bg-header: #eee8dc;
+    --bg-input: #fffdf8;
+    --bg-msg: #fffdf8;
+    --bg-msg-hover: #f9f4ea;
+    --bg-elevated: #fffdf8;
+    --code-bg: #f1ebdf;
+    --border: #ddd4c3;
+    --border-strong: #c5baa5;
+    --text: #2e2a24;
+    --text-strong: #15120e;
+    --text-muted: #3c3730;
+    --text-dim: #685f52;
+    --text-system: #7a7062;
+    /* Accent: terracotta */
+    --accent: #b0532f;
+    --text-on-accent: #ffffff;
+    --user-color: #8f4023;
+    --tint: #000000;
+    --shadow-rgb: 70, 50, 20;
+}
+
+[data-theme="mist"] {
+    color-scheme: light;
+    --bg: #f2f4f7;
+    --bg-header: #e8ebf0;
+    --bg-input: #ffffff;
+    --bg-msg: #ffffff;
+    --bg-msg-hover: #f5f7fa;
+    --bg-elevated: #ffffff;
+    --code-bg: #eef1f5;
+    --border: #d5dae2;
+    --border-strong: #bcc3ce;
+    --text: #272b33;
+    --text-strong: #0f1217;
+    --text-muted: #363b45;
+    --text-dim: #5f6775;
+    --text-system: #717987;
+    /* Accent: cobalt */
+    --accent: #3f6fd1;
+    --text-on-accent: #ffffff;
+    --user-color: #2f58ad;
+    --tint: #000000;
+    --shadow-rgb: 30, 45, 70;
 }
 
 :root {
@@ -4883,20 +5028,6 @@ a.file-attachment:hover { border-color: var(--accent); }
 .agents-health-dot.down { background: #f85149; }
 .agents-health-error { color: #f85149; white-space: normal; overflow-wrap: anywhere; margin-top: 2px; }
 .agents-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
-.agents-btn {
-    padding: 6px 12px;
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-    white-space: nowrap;
-}
-.agents-btn:hover { border-color: var(--accent); }
-.agents-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
-.agents-btn.danger:hover { border-color: var(--danger); color: var(--error-color); }
 .settings-panel input:not([type=checkbox]):not([type=color]),
 .settings-panel select,
 .settings-panel textarea {
@@ -5144,4 +5275,4 @@ a.file-attachment:hover { border-color: var(--accent); }
 .agents-inline.agents-inline-top { align-items: flex-start; }
 
 /* Agent colours are picked for dark backgrounds; darken their names on Light so they stay readable */
-[data-theme="light"] :is(.msg-sender, .member-name) { filter: brightness(0.55) saturate(1.3); }
+:is([data-theme="light"], [data-theme="paper"], [data-theme="mist"]) :is(.msg-sender, .member-name) { filter: brightness(0.55) saturate(1.3); }

@@ -61,7 +61,7 @@ room_settings: dict = {
     "custom_roles": [],
 }
 
-THEMES = ("charcoal", "graphite", "midnight", "light")
+THEMES = ("charcoal", "graphite", "slate", "forest", "plum", "midnight", "contrast", "light", "paper", "mist")  # style.css + THEME_LIST in chat.js
 
 # Channel validation
 _CHANNEL_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9\-]{0,19}$')
@@ -2566,6 +2566,9 @@ async def voice_config_save(request: Request):
                 return JSONResponse({"error": f"{name}: {err}"}, status_code=400)
             if params:
                 keep["parameters"] = params
+        if isinstance(p.get("tags"), list) or str(p.get("tags") or "").strip():
+            # blank: ask the service; "none": no tags; else the list
+            keep["tags"] = [] if str(p["tags"]).strip().lower() == "none" else voice.parse_tags(p["tags"])
         if p.get("stream") in (True, "true", "1", "yes"):
             keep["stream"] = True  # provider streams raw PCM16 (POST stream=true, response_format=pcm)
         if str(p.get("sample_rate") or "").isdigit():

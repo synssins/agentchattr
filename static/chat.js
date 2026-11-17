@@ -2135,7 +2135,7 @@ function _clearClearChatConfirm() {
     const confirmEl = document.getElementById('clear-chat-confirm');
     if (confirmEl) confirmEl.remove();
     if (btn) {
-        btn.textContent = 'Clear Chat';
+        btn.textContent = 'Clear chat';
         btn.classList.remove('confirming');
     }
     document.removeEventListener('click', _clearChatOutsideClick, true);
@@ -2165,7 +2165,7 @@ function clearChat() {
         return;
     }
 
-    btn.textContent = 'Clear Chat?';
+    btn.textContent = 'Clear chat?';
     btn.classList.add('confirming');
 
     const confirmWrap = document.createElement('span');
@@ -2197,16 +2197,26 @@ function clearChat() {
     setTimeout(() => document.addEventListener('click', _clearChatOutsideClick, true), 0);
 }
 
-const THEMES = ['charcoal', 'graphite', 'midnight', 'light'];
+// Every theme in style.css. The Appearance page draws its picker from this list.
+const THEME_LIST = [
+    { id: 'charcoal', label: 'Charcoal' }, { id: 'graphite', label: 'Graphite' },
+    { id: 'slate', label: 'Slate' }, { id: 'forest', label: 'Forest' },
+    { id: 'plum', label: 'Plum' }, { id: 'midnight', label: 'Midnight' },
+    { id: 'contrast', label: 'High contrast' },
+    { id: 'light', label: 'Light', light: true }, { id: 'paper', label: 'Paper', light: true },
+    { id: 'mist', label: 'Mist', light: true },
+];
+window.THEME_LIST = THEME_LIST;
 const HLJS_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/';
 
 function applyTheme(theme) {
-    if (!THEMES.includes(theme)) theme = 'charcoal';
-    document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem('agentchattr-theme', theme); } catch (e) { /* private mode */ }
+    const t = THEME_LIST.find(x => x.id === theme) || THEME_LIST[0];
+    document.documentElement.dataset.theme = t.id;
+    try { localStorage.setItem('agentchattr-theme', t.id); } catch (e) { /* private mode */ }
     const link = document.getElementById('hljs-theme');
-    if (link) link.href = HLJS_CSS + (theme === 'light' ? 'github.min.css' : 'github-dark.min.css');
+    if (link) link.href = HLJS_CSS + (t.light ? 'github.min.css' : 'github-dark.min.css');
 }
+window.applyTheme = applyTheme;
 
 // Picking model (Settings > Chat): the API agents that can choose who answers
 async function fillPickerAgents(current) {
@@ -4372,7 +4382,7 @@ function _helpCardDefs() {
             anchor: '#rules-toggle',
             row: 'top',
             html:
-            '<div class="hg-module-title">Rules <span class="hg-loc">top-right panel</span></div>' +
+            '<div class="hg-module-title">Rules <span class="hg-loc">right panel</span></div>' +
             '<p class="hg-module-desc">Rules tell agents how to work in this room. Active rules are followed automatically.</p>' +
             '<div class="hg-mock-panel">' +
                 '<div class="hg-mock-panel-header">' +
@@ -4401,7 +4411,7 @@ function _helpCardDefs() {
             light: true,
             wide: true,
             html:
-            '<div class="hg-module-title">Channels <span class="hg-loc">top bar</span></div>' +
+            '<div class="hg-module-title">Channels <span class="hg-loc">sidebar or top bar</span></div>' +
             '<p class="hg-module-desc">Split conversations by topic. Each channel has its own message history.</p>' +
             '<div class="hg-mock-channels">' +
                 '<span class="hg-mock-ch active"># general</span>' +
@@ -4475,6 +4485,31 @@ function _helpCardDefs() {
             '<p class="hg-module-tip">Click the <strong>&#9201; clock button</strong> next to Send to schedule a one-time or recurring message.</p>'
         }
     ];
+}
+
+// Closing block of the guide: composer keys, then a quiet About line with the project links.
+function _helpAbout() {
+    var box = document.createElement('div');
+    box.className = 'hg-about';
+    var keys = document.createElement('p');
+    keys.textContent = 'Composer: Enter sends, Shift+Enter adds a new line. Paste or drop files to attach them. '
+        + 'Type / for commands or @ to mention. The mic types what is said. '
+        + 'The talk button starts a hands-free conversation on click and is push-to-talk while held.';
+    var about = document.createElement('p');
+    about.className = 'hg-about-links';
+    about.append('About: ');
+    [['Community on Discord', 'https://discord.gg/qzfn5YTT9a'],
+     ['Support development', 'https://buymeacoffee.com/bcurts']].forEach(function(l, i) {
+        var a = document.createElement('a');
+        a.textContent = l[0];
+        a.href = l[1];
+        a.target = '_blank';
+        a.rel = 'noopener';
+        if (i) about.append(' \u00b7 ');
+        about.appendChild(a);
+    });
+    box.append(keys, about);
+    return box;
 }
 
 // --- Anchored (desktop) mode ---
@@ -4568,6 +4603,7 @@ function _openHelpAnchored(cardDefs) {
         var anchorEl = document.querySelector(def.anchor);
         if (!anchorEl) return;
         var rect = anchorEl.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;  // nothing to ring in this layout
         var spot = document.createElement('div');
         spot.className = 'hg-spotlight';
         spot.dataset.anchor = def.anchor;
@@ -4584,6 +4620,7 @@ function _openHelpAnchored(cardDefs) {
     hint.className = 'hg-dismiss-hint';
     hint.textContent = 'Press Esc or click outside to close';
     overlay.appendChild(hint);
+    overlay.appendChild(_helpAbout());
 
     document.body.appendChild(overlay);
 
@@ -4605,7 +4642,8 @@ function _positionHelpRows() {
     var footer = document.querySelector('footer');
 
     var headerBottom = header ? header.getBoundingClientRect().bottom : 48;
-    var channelBarBottom = channelBar ? channelBar.getBoundingClientRect().bottom : headerBottom + 30;
+    // Sidebar mode has no channel bar: start under the header
+    var channelBarBottom = channelBar && channelBar.offsetHeight ? channelBar.getBoundingClientRect().bottom : headerBottom;
     var footerTop = footer ? footer.getBoundingClientRect().top : window.innerHeight - 60;
 
     var topRow = document.getElementById('hg-row-top');
@@ -4645,6 +4683,7 @@ function _drawHelpArrows() {
 
         var cardRect = cardEl.getBoundingClientRect();
         var anchorRect = anchorEl.getBoundingClientRect();
+        if (!anchorRect.width || !anchorRect.height) return;  // anchor not on screen in this layout
 
         var cardCx = cardRect.left + cardRect.width / 2;
         var anchorCx = anchorRect.left + anchorRect.width / 2;
@@ -4726,6 +4765,7 @@ function _openHelpStacked(cardDefs) {
         mod.addEventListener('click', function(e) { e.stopPropagation(); });
         content.appendChild(mod);
     });
+    content.appendChild(_helpAbout());
 
     modal.appendChild(content);
     overlay.appendChild(modal);

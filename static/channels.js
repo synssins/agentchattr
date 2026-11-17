@@ -114,10 +114,23 @@ function renderChannelSidebar() {
     const existingCreate = list.querySelector('.channel-inline-create');
     list.innerHTML = '';
 
+    // Long lists get a filter box
+    const filter = document.getElementById('channel-filter');
+    const many = window.channelList.length > CHANNEL_FILTER_MIN;
+    if (filter) {
+        filter.classList.toggle('hidden', !many);
+        if (!many) filter.value = '';
+    }
+    const query = filter ? filter.value.trim().toLowerCase() : '';
+    let shown = 0, unreadTotal = 0;
+
     for (const name of window.channelList) {
         const row = document.createElement('button');
         row.className = 'channel-sidebar-row' + (name === window.activeChannel ? ' active' : '');
         row.dataset.channel = name;
+        if (name === window.activeChannel) row.setAttribute('aria-current', 'page');
+        row.hidden = !!query && !name.includes(query);
+        if (!row.hidden) shown++;
 
         const label = document.createElement('span');
         label.className = 'channel-sidebar-row-label';
@@ -126,6 +139,7 @@ function renderChannelSidebar() {
 
         const unread = window.channelUnread[name] || 0;
         if (unread > 0 && name !== window.activeChannel) {
+            unreadTotal += unread;
             const dot = document.createElement('span');
             dot.className = 'channel-sidebar-row-unread';
             dot.textContent = unread > 99 ? '99+' : unread;
@@ -159,8 +173,20 @@ function renderChannelSidebar() {
         list.appendChild(row);
     }
 
+    if (query && !shown) {
+        const none = document.createElement('div');
+        none.className = 'nav-empty';
+        none.textContent = 'No matching channels';
+        list.appendChild(none);
+    }
     if (existingCreate) list.appendChild(existingCreate);
 
+    // Shown on the Channels heading while that group is collapsed
+    const total = document.getElementById('nav-channels-unread');
+    if (total) {
+        total.textContent = unreadTotal > 99 ? '99+' : unreadTotal;
+        total.classList.toggle('hidden', !unreadTotal);
+    }
 }
 
 function _showSidebarRenameDialog(oldName) {
@@ -214,7 +240,7 @@ function _showSidebarRenameDialog(oldName) {
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); confirm.click(); }
-        if (e.key === 'Escape') cleanup();
+        if (e.key === 'Escape') { e.stopPropagation(); cleanup(); }  // cancel the input only, keep the drawer open
     });
     input.addEventListener('input', () => {
         input.value = input.value.toLowerCase().replace(/[^a-z0-9\-]/g, '');
@@ -323,10 +349,13 @@ function filterMessagesByChannel() {
 // Create
 // ---------------------------------------------------------------------------
 
-function showChannelCreateDialog() {
+function showChannelCreateDialog(fromSidebar) {
     // Route the inline create into the sidebar list when sidebar mode is on,
     // otherwise into the top-bar tabs — keeps the input visible either way.
-    const inSidebar = document.body.classList.contains('channels-in-sidebar');
+    // Each add button says where it sits (on a phone the sidebar is a drawer in both modes).
+    const inSidebar = typeof fromSidebar === 'boolean' ? fromSidebar
+        : document.body.classList.contains('channels-in-sidebar');
+    if (inSidebar) _setNavGroupOpen(document.querySelector('.nav-group[data-group="channels"]'), true);
     const tabs = inSidebar
         ? document.getElementById('channel-sidebar-list')
         : document.getElementById('channel-tabs');
@@ -371,7 +400,7 @@ function showChannelCreateDialog() {
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); _submitInlineCreate(input, wrapper); if (addBtn) addBtn.style.display = ''; }
-        if (e.key === 'Escape') cleanup();
+        if (e.key === 'Escape') { e.stopPropagation(); cleanup(); }  // cancel the input only, keep the drawer open
     });
     input.addEventListener('input', () => {
         input.value = input.value.toLowerCase().replace(/[^a-z0-9\-]/g, '');
@@ -448,7 +477,7 @@ function showChannelRenameDialog(oldName) {
 
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); confirm.click(); }
-        if (e.key === 'Escape') cleanup();
+        if (e.key === 'Escape') { e.stopPropagation(); cleanup(); }  // cancel the input only, keep the drawer open
     });
     input.addEventListener('input', () => {
         input.value = input.value.toLowerCase().replace(/[^a-z0-9\-]/g, '');
@@ -539,7 +568,6 @@ const SIDEBAR_WIDTH_KEY = 'agentchattr-channel-sidebar-w';
 function setChannelSidebarMode(mode, persist = true) {
     const sidebar = document.getElementById('channel-sidebar');
     const top = document.getElementById('channel-sidebar-top');
-    const support = document.querySelector('.channel-support');
     const updatePill = document.getElementById('update-pill');
     if (!sidebar) return;
 
@@ -547,40 +575,77 @@ function setChannelSidebarMode(mode, persist = true) {
     document.body.classList.toggle('channels-in-sidebar', on);
     sidebar.classList.toggle('hidden', !on);
 
-    // Move support link + update pill into the sidebar top when sidebar is
-    // active, and back to the top bar when it's off. Update pill goes first
-    // so it sits above support when visible.
+    // The update pill sits at the top of the sidebar when it is on, in the channel bar otherwise
     const rightBar = document.querySelector('#channel-bar .channel-bar-right');
-    if (on && top) {
-        if (updatePill && updatePill.parentElement !== top) top.appendChild(updatePill);
-        if (support && support.parentElement !== top) top.appendChild(support);
-    } else if (!on && rightBar) {
-        if (updatePill && updatePill.parentElement !== rightBar) rightBar.appendChild(updatePill);
-        if (support && support.parentElement !== rightBar) rightBar.appendChild(support);
-    }
+    const pillHome = on ? top : rightBar;
+    if (updatePill && pillHome && updatePill.parentElement !== pillHome) pillHome.appendChild(updatePill);
 
     if (persist) localStorage.setItem(SIDEBAR_MODE_KEY, mode);
     const setting = document.getElementById('setting-channel-sidebar');
     if (setting && setting.value !== mode) setting.value = mode;
 
     if (on) renderChannelSidebar();
-    _updateSupportLabel();
+    _placeNavTools();
 }
 
-// Swap "Support development" → "Support" when the sidebar is narrow, so the
-// text doesn't truncate. Width threshold tuned to match the pill's padding
-// plus the heart glyph.
-function _updateSupportLabel() {
-    const label = document.querySelector('.channel-support .support-label');
-    if (!label) return;
-    const inSidebar = document.body.classList.contains('channels-in-sidebar');
-    if (!inSidebar) {
-        label.textContent = ' Support development';
-        return;
+// ---------------------------------------------------------------------------
+// Navigation: tools (Jobs, Rules, Pinned, Scheduled, Settings, Help) and groups
+// ---------------------------------------------------------------------------
+
+const CHANNEL_FILTER_MIN = 10;   // the filter box appears above this many channels
+const _navNarrow = window.matchMedia('(max-width: 900px)');   // same breakpoint as the drawers in style.css
+
+// One set of tool buttons (other scripts find them by id). They live in the sidebar;
+// in Top bar mode on a wide screen there is no sidebar, so they move to the header.
+function _placeNavTools() {
+    const workspace = document.getElementById('nav-workspace-tools');
+    const app = document.getElementById('nav-app-tools');
+    if (!workspace || !app) return;
+    const inSidebar = document.body.classList.contains('channels-in-sidebar') || _navNarrow.matches;
+    const homes = inSidebar
+        ? [document.getElementById('nav-workspace-body'), document.getElementById('nav-bottom')]
+        : [document.getElementById('header-tools'), document.getElementById('header-tools')];
+    if (homes[0] && workspace.parentElement !== homes[0]) homes[0].appendChild(workspace);
+    if (homes[1] && app.parentElement !== homes[1]) homes[1].appendChild(app);
+}
+
+function _setNavGroupOpen(group, open, persist = true) {
+    if (!group) return;
+    group.classList.toggle('collapsed', !open);
+    group.querySelector('.nav-group-toggle')?.setAttribute('aria-expanded', String(open));
+    if (persist) { try { localStorage.setItem('agenthub-group-nav-' + group.dataset.group, open ? '1' : '0'); } catch (e) { /* private mode */ } }
+}
+
+function _setupNav() {
+    // Groups expand and collapse; the state is remembered in this browser
+    document.querySelectorAll('#channel-sidebar .nav-group').forEach((group) => {
+        let open = true;
+        try { const v = localStorage.getItem('agenthub-group-nav-' + group.dataset.group); if (v !== null) open = v === '1'; } catch (e) { /* private mode */ }
+        _setNavGroupOpen(group, open, false);
+        group.querySelector('.nav-group-toggle')?.addEventListener('click', () => {
+            _setNavGroupOpen(group, group.classList.contains('collapsed'));
+        });
+    });
+
+    const filter = document.getElementById('channel-filter');
+    if (filter) {
+        filter.addEventListener('input', renderChannelSidebar);
+        filter.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && filter.value) { e.stopPropagation(); filter.value = ''; renderChannelSidebar(); }
+        });
     }
-    const panel = document.getElementById('channel-sidebar');
-    const w = panel ? panel.offsetWidth : 200;
-    label.textContent = w < 200 ? ' Support' : ' Support development';
+
+    // jobs.js, rules-panel.js and chat.js mark an open panel with .active on its button:
+    // mirror that to aria-pressed
+    const mirror = new MutationObserver((changes) => {
+        for (const c of changes) c.target.setAttribute('aria-pressed', String(c.target.classList.contains('active')));
+    });
+    for (const id of ['jobs-toggle', 'rules-toggle', 'pins-toggle']) {
+        const btn = document.getElementById(id);
+        if (btn) mirror.observe(btn, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    _navNarrow.addEventListener('change', _placeNavTools);
 }
 
 function setupChannelSidebarGrip() {
@@ -610,7 +675,6 @@ function setupChannelSidebarGrip() {
         const newWidth = Math.min(Math.max(startWidth + delta, 140), 400);
         panel.style.setProperty('--channel-sidebar-w', newWidth + 'px');
         panel.style.width = newWidth + 'px';
-        _updateSupportLabel();
     });
 
     document.addEventListener('mouseup', () => {
@@ -641,28 +705,15 @@ function _restoreSidebarState() {
 // Init
 // ---------------------------------------------------------------------------
 
-// Keep Clear Chat the same pixel width as the send-group so its left edge
-// aligns with the Send button's left edge. Pure CSS can't match another
-// element's measured width, so we sync via JS on load + resize.
-function _syncClearChatWidth() {
-    const clearBtn = document.getElementById('clear-chat-btn');
-    const sendGroup = document.querySelector('#input-row .send-group');
-    if (!clearBtn || !sendGroup) return;
-    const w = sendGroup.offsetWidth;
-    if (w > 0) clearBtn.style.width = w + 'px';
-}
-
 function _channelsInit() {
     setupChannelSidebarGrip();
+    _setupNav();
     _restoreSidebarState();
 
     const setting = document.getElementById('setting-channel-sidebar');
     if (setting) {
         setting.addEventListener('change', () => setChannelSidebarMode(setting.value));
     }
-
-    requestAnimationFrame(_syncClearChatWidth);
-    window.addEventListener('resize', _syncClearChatWidth);
 }
 
 // ---------------------------------------------------------------------------
