@@ -502,6 +502,13 @@
         const checkRow = field('Voice check model', check, { stack: true,
             hint: 'Decides whether a sentence was said to an agent. The models come from Providers > LLMs.' });
         checkRow.querySelector('.ui-field-control').append(checkNote);
+        // Answer without the name (voice_gate.UNNAMED): saved on the server, for every device and browser
+        const unnamed = el('input', { type: 'checkbox' });
+        api('GET', '/api/voice/unnamed').then(r => { unnamed.checked = r.on; }, () => {});
+        unnamed.addEventListener('change', async () => {
+            try { unnamed.checked = (await api('POST', '/api/voice/unnamed', { on: unnamed.checked })).on; }
+            catch (err) { unnamed.checked = !unnamed.checked; checkNote.textContent = err.message; }
+        });
         // Passphrase for doors, locks and covers (passphrase.py): only a salted hash is kept
         const pass = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Not set' });
         const passNote = el('small', { class: 'ui-field-hint', text: '' });
@@ -521,6 +528,7 @@
             group('Hands-free talk', { id: 'settings-voice-talk' },
                 field('Interrupt by talking over an agent', barge, { hint: 'Barge-in. Use with headphones: with speakers the microphone hears the agent. Off: the microphone pauses while an agent speaks. Stored in this browser.' }),
                 field('Answer only when named', named, { hint: 'No wake word: an agent answers only when its name is said anywhere in the sentence, then follow-ups for 30 s without the name. Talking about an agent is ignored. Ignored speech is not posted or kept. Stored in this browser.' }),
+                field('Answer without the name', unnamed, { hint: 'The voice check model also judges sentences with no name in them, and the agent with a voice answers the ones plainly meant for an assistant (a command for the house, a question asked of it). People talking to each other, about the agent, or the TV are ignored. Every sentence heard goes to the check model. Off: the name is needed to start.' }),
                 checkRow),
             group('Mic button', { id: 'settings-voice-mic' },
                 field('Voice typing', typing, { stack: true, hint: 'What the mic button next to the message box does. Stored in this browser.' })),

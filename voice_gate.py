@@ -1,7 +1,9 @@
 """Voice by name, no wake word: decide whether a transcribed sentence was spoken TO an agent.
 
   1. Stop words ("stop", "cancel", ...) while a voice conversation is open stop that agent.
-  2. No agent named and no open conversation: ignored, the model is not asked.
+  2. No agent named and no open conversation: ignored, the model is not asked, unless answering
+     without the name is on (Settings > Voice): then the model decides whether the sentence was
+     said to the channel's assistant at all, from its wording alone.
   3. Otherwise the voice check model (Settings > Voice, a model from Settings > LLMs) decides
      "to" vs "about" for a named agent, or whether a nameless sentence is a follow-up.
   4. Model missing, failing or slow: ignored (fail closed).
@@ -34,6 +36,13 @@ PROMPT = (
     "answer meant for them), or not: talking ABOUT them to someone else, quoting, other people, TV, or "
     "unrelated talk. If a conversation with an agent is open (it spoke recently), a follow-up without its "
     'name can still be TO it. Reply with JSON only: {"to": "<handle>"} or {"to": null}.')
+# Added to the prompt when nobody was named and no conversation is open (answering without the name).
+UNNAMED = (
+    "No name was said and no conversation is open. Say it is TO the candidate only if it is plainly meant "
+    "for a voice assistant: a command for the house or a device (lights, music, timers, locks, the "
+    "thermostat), or a question asked of the assistant. Not TO it: people talking to each other (a name, "
+    "\"honey\", \"you guys\", plans between people), talking about the assistant, TV, radio, reading aloud, "
+    "singing, thinking aloud, or anything unclear. When in doubt, null.")
 
 _lock = threading.Lock()
 _conv: dict[tuple[str, str], dict] = {}   # (channel, source) -> {"agent", "until", "since", "turns"}
@@ -158,9 +167,10 @@ def _parse(answer: str | None, candidates: list[str]) -> str | None | bool:
 
 
 def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float | None = None,
-           source: str = "browser") -> dict:
+           source: str = "browser", unnamed: str | None = None) -> dict:
     """text: transcript. here: {handle: label} of agents in the channel. ask(prompt) -> model
-    answer or None on failure. named(text, here) -> handles named in the text.
+    answer or None on failure. named(text, here) -> handles named in the text. unnamed: the agent a
+    sentence with no name and no open conversation may still be for (answering without the name), or None.
     -> {"accepted", "to", "reason", "open"}."""
     now = time.time() if now is None else now
     text = text.strip()
@@ -177,17 +187,19 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
     if current and STOP_RE.match(text):
         return out(False, current, "stopped")
     names = [n for n in named(text, here) if n in here]
-    if not names and not current:
+    alone = not names and not current  # nobody named and no conversation open
+    if alone and unnamed not in here:
         return out(False, None, "no_name")
     # Only a sentence this source could post claims it: another device that would ignore it
     # (no name, no conversation) must not make the right one drop it as a duplicate.
     if _is_duplicate(channel, source, text, now):
         return out(False, None, "duplicate")
-    candidates = names or [current]
+    candidates = names or [current or unnamed]
     convo = "\n".join(f"{'owner' if r == 'user' else current}: {t}" for r, t in _turns(channel, source)) if current else ""
     who = "\n".join(f"@{n}" + (f" (name: {here[n]})" if here[n] and here[n] != n else "") for n in candidates)
     prompt = (f"Candidate agents:\n{who}\n\nOpen conversation: "
               + (f"with @{current}\n{convo or '(no turns yet)'}" if current else "none")
+              + (f"\n\n{UNNAMED}" if alone else "")
               + f"\n\nCURRENT utterance: {text}")
     to = _parse(ask(prompt), candidates)
     if to is False:
@@ -195,4 +207,4 @@ def decide(text: str, channel: str, here: dict[str, str], ask, named, now: float
     if to is None:
         return out(False, None, "about" if names else "not_for_agent")
     _accept(channel, to, text, now, source)
-    return out(True, to, "named" if to in names else "followup")
+    return out(True, to, "named" if to in names else ("unnamed" if alone else "followup"))

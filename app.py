@@ -2727,6 +2727,13 @@ def _voice_ask(spec: dict, prompt: str) -> str | None:
         return None
 
 
+def _voiced(here) -> str | None:
+    """The channel's agent with a voice of its own (else its first): the one a speaker is talking to."""
+    specs = agent_manager.specs if agent_manager else {}
+    voiced = [n for n in here if (specs.get(n) or {}).get("voice_provider")]
+    return min(voiced or here, default=None)
+
+
 def _voice_here(channel: str) -> dict:
     """{handle: label} of the agents in a channel, for the voice check."""
     names = [n for n in registry.get_active_names() if not agent_manager or agent_manager.in_channel(n, channel)]
@@ -2747,9 +2754,12 @@ async def _voice_decide(text: str, channel: str, sender: str, source: str = "bro
 
     def ask(prompt):
         return _voice_ask(spec, prompt) if spec else None
+    import voice
+    here = _voice_here(channel)
+    unnamed = _voiced(here) if voice.load().get("answer_unnamed") else None
     try:
-        r = await asyncio.wait_for(asyncio.to_thread(voice_gate.decide, text, channel, _voice_here(channel), ask,
-                                                     responder.named, None, source), VOICE_CHECK_TIMEOUT + 2)
+        r = await asyncio.wait_for(asyncio.to_thread(voice_gate.decide, text, channel, here, ask,
+                                                     responder.named, None, source, unnamed), VOICE_CHECK_TIMEOUT + 2)
     except asyncio.TimeoutError:
         r = {"accepted": False, "to": None, "reason": "decision_unavailable",
              "open": voice_gate.open_for(channel, source=source)}
@@ -2883,10 +2893,7 @@ def _device_direct(text: str, dev: dict) -> dict:
     if held:
         return held
     if agent not in here:
-        # The channel's agent with a voice of its own is the one a speaker is talking to.
-        specs = agent_manager.specs if agent_manager else {}
-        voiced = [n for n in here if (specs.get(n) or {}).get("voice_provider")]
-        agent = min(voiced or here, default=None)
+        agent = _voiced(here)
     if not agent:
         return {"accepted": False, "to": None, "reason": "no_agents", "open": None}
     voice_gate.accept(channel, agent, text, source=dev["name"])
@@ -3057,6 +3064,26 @@ async def voice_check_model_set(request: Request):
         conf.pop("check_model", None)
     voice.save(conf)
     return conf.get("check_model") or {}
+
+
+@app.get("/api/voice/unnamed")
+async def voice_unnamed_get():
+    import voice
+    return {"on": bool(voice.load().get("answer_unnamed"))}
+
+
+@app.post("/api/voice/unnamed")
+async def voice_unnamed_set(request: Request):
+    """Body: {on}: answer without the name. The voice check model judges every sentence heard, not only
+    the ones that name an agent."""
+    import voice
+    conf = voice.load()
+    if (await request.json()).get("on"):
+        conf["answer_unnamed"] = True
+    else:
+        conf.pop("answer_unnamed", None)
+    voice.save(conf)
+    return {"on": bool(conf.get("answer_unnamed"))}
 
 
 @app.post("/api/voice/clone")

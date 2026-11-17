@@ -28,6 +28,28 @@ class Gate(unittest.TestCase):
         self.assertEqual((r["accepted"], r["reason"]), (False, "no_name"))
         self.assertEqual(self.asked, [])
 
+    def test_unnamed_on_asks_the_model_and_opens_a_conversation(self):
+        r = g.decide("Turn off the desk lamp.", "ch", HERE, self.ask_to("jessica"), responder.named, now=1000,
+                     unnamed="jessica")
+        self.assertEqual((r["accepted"], r["to"], r["reason"], r["open"]), (True, "jessica", "unnamed", "jessica"))
+        self.assertIn("No name was said", self.asked[0])
+
+    def test_unnamed_on_still_ignores_talk_between_people(self):
+        r = g.decide("Honey, did you feed the dog?", "ch", HERE, self.ask_to('{"to": null}'), responder.named,
+                     now=1000, unnamed="jessica")
+        self.assertEqual((r["accepted"], r["reason"], r["open"]), (False, "not_for_agent", None))
+
+    def test_unnamed_agent_not_in_the_channel_is_no_name(self):
+        r = g.decide("Turn off the desk lamp.", "ch", HERE, self.ask_to("jessica"), responder.named, now=1000,
+                     unnamed="margie")
+        self.assertEqual(r["reason"], "no_name")
+        self.assertEqual(self.asked, [])
+
+    def test_named_sentence_gets_no_unnamed_rule(self):
+        g.decide("Turn off the desk lamp, Jessica.", "ch", HERE, self.ask_to("jessica"), responder.named,
+                 now=1000, unnamed="jessica")
+        self.assertNotIn("No name was said", self.asked[0])
+
     def test_named_anywhere_in_the_sentence_is_accepted(self):
         r = self.decide("Turn off the desk lamp, Jessica.", self.ask_to("jessica"))
         self.assertEqual((r["accepted"], r["to"], r["reason"], r["open"]), (True, "jessica", "named", "jessica"))
