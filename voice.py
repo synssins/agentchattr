@@ -157,6 +157,14 @@ def tags(p: dict) -> list[str]:
     return out
 
 
+def all_tags() -> list[str]:
+    """Every emotion tag any provider performs: the chat page hides these in message text."""
+    out: list[str] = []
+    for p in load()["providers"]:
+        out += [t for t in tags(p) if t not in out]
+    return out
+
+
 def tags_prompt(provider_name: str | None) -> str:
     """The line of an agent's system prompt about emotion tags ("" when its voice has none)."""
     have = tags(provider(provider_name))

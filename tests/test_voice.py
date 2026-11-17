@@ -54,6 +54,9 @@ class Voice(unittest.TestCase):
         self.assertIn("[sighs]", voice.speakable(t))  # no engine named: left alone
         self.assertEqual(voice.parse_tags("[Laugh], sigh\n[x]; bad!,[laugh]"), ["[laugh]", "[sigh]"])
         self.assertEqual(voice.tags({"tags": []}), [])
+        voice.save({**voice.load(), "providers": [{"name": "A", "base_url": "http://127.0.0.1:9/v1", "tags": ["[laugh]"]},
+                                                  {"name": "B", "base_url": "http://127.0.0.1:9/v1", "tags": ["[sigh]", "[laugh]"]}]})
+        self.assertEqual(voice.all_tags(), ["[laugh]", "[sigh]"])
         self.assertEqual(voice.tags({"base_url": "http://127.0.0.1:9/v1"}), [])  # nothing listening: none
 
     def test_speakable_drops_code_links_and_markup(self):

@@ -126,9 +126,15 @@ def main():
         # This is safe: same-origin policy prevents cross-origin pages from reading
         # the response body, so only the user's own browser tab gets the token.
         html = (static_dir / "index.html").read_text("utf-8")
+        try:  # emotion tags of the speech engines: spoken, never shown (letters and spaces only, voice.TAG_RE)
+            import json
+            import voice
+            said = json.dumps(await asyncio.to_thread(voice.all_tags))
+        except Exception:
+            said = "[]"
         injected = html.replace(
             "</head>",
-            f'<script>window.__SESSION_TOKEN__="{session_token}";</script>\n</head>',
+            f'<script>window.__SESSION_TOKEN__="{session_token}";window.__VOICE_TAGS__={said};</script>\n</head>',
         )
         return HTMLResponse(injected, headers={"Cache-Control": "no-store"})
 

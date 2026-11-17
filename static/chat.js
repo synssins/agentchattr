@@ -275,6 +275,8 @@ function init() {
     });
 }
 
+const VOICE_TAGS = new Set(window.__VOICE_TAGS__ || []);  // set by the server with the page
+
 function renderMarkdown(text) {
     // Protect Windows paths from escape replacement (e.g. \tests → tab, \new → newline)
     const pathSlots = [];
@@ -293,6 +295,11 @@ function renderMarkdown(text) {
         codeSlots.push(match);
         return '\x00C' + (codeSlots.length - 1) + '\x00';
     });
+    // Emotion tags for the speech engine ([laugh], [sigh]) are spoken, not shown; code keeps them
+    if (VOICE_TAGS.size) {
+        text = text.replace(/[ \t]*\[[A-Za-z][A-Za-z ]{1,23}\]/g, (m) => VOICE_TAGS.has(m.trim().toLowerCase()) ? '' : m)
+                   .replace(/^[ \t]+(?=\S)/, '');
+    }
     // Escape angle brackets in non-code text only
     text = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     if (window.Artifacts) text = Artifacts.tokensToHtml(text);  // [artifact:<id>] -> card (code slots untouched)
